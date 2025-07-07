@@ -14,33 +14,66 @@ import threading
 # Load environment variables
 load_dotenv()
 
-# Import MetaApi for MT5 integration
+# Import MetaApi for MT5 integration with comprehensive error handling
 METAAPI_AVAILABLE = False
 metaapi_error = None
+MetaApi = None
 
-try:
-    from metaapi_cloud_sdk import MetaApi
-    METAAPI_AVAILABLE = True
-    print("MetaApi Cloud SDK loaded - MT5 integration enabled")
-except ImportError as e:
-    metaapi_error = str(e)
-    print(f"MetaApi Cloud SDK not available - Error: {e}")
-except Exception as e:
-    metaapi_error = str(e)
-    print(f"MetaApi Cloud SDK error: {e}")
-
-# Force MetaAPI availability check for deployment environments
-if not METAAPI_AVAILABLE:
+def try_import_metaapi():
+    """Try to import MetaAPI SDK with multiple fallback methods"""
+    global METAAPI_AVAILABLE, metaapi_error, MetaApi
+    
+    # Method 1: Direct import
+    try:
+        from metaapi_cloud_sdk import MetaApi
+        METAAPI_AVAILABLE = True
+        print("MetaApi Cloud SDK loaded - MT5 integration enabled")
+        return True
+    except ImportError as e:
+        metaapi_error = str(e)
+        print(f"Direct import failed: {e}")
+    except Exception as e:
+        metaapi_error = str(e)
+        print(f"Direct import error: {e}")
+    
+    # Method 2: Force install and import
+    try:
+        import subprocess
+        import sys
+        print("Attempting to install MetaAPI SDK...")
+        result = subprocess.run([sys.executable, "-m", "pip", "install", "metaapi-cloud-sdk==28.0.7"], 
+                              capture_output=True, text=True)
+        if result.returncode == 0:
+            print("MetaAPI SDK installed successfully")
+            from metaapi_cloud_sdk import MetaApi
+            METAAPI_AVAILABLE = True
+            print("MetaApi Cloud SDK loaded after installation - MT5 integration enabled")
+            return True
+        else:
+            print(f"Installation failed: {result.stderr}")
+    except Exception as e:
+        print(f"Installation method failed: {e}")
+    
+    # Method 3: Check if module exists but import failed
     try:
         import importlib.util
         spec = importlib.util.find_spec("metaapi_cloud_sdk")
         if spec is not None:
+            print("MetaAPI SDK detected in system but import failed")
+            # Try to load the module directly
+            import importlib
+            module = importlib.import_module("metaapi_cloud_sdk")
+            MetaApi = getattr(module, "MetaApi")
             METAAPI_AVAILABLE = True
-            print("MetaApi Cloud SDK detected via importlib - MT5 integration enabled")
-        else:
-            print("MetaApi Cloud SDK not found in system modules")
+            print("MetaApi Cloud SDK loaded via importlib - MT5 integration enabled")
+            return True
     except Exception as e:
-        print(f"Module detection error: {e}")
+        print(f"Importlib method failed: {e}")
+    
+    return False
+
+# Try to import MetaAPI
+try_import_metaapi()
 
 # Reconstruct tokens from split parts for enhanced security
 DISCORD_TOKEN_PART1 = os.getenv("DISCORD_TOKEN_PART1", "")
@@ -237,14 +270,10 @@ async def initialize_metaapi():
     """Initialize MetaApi connection for MT5 trading"""
     global METAAPI_AVAILABLE, MetaApi
     
-    # Try to import MetaAPI dynamically if initial import failed
+    # Try to import MetaAPI if not already available
     if not METAAPI_AVAILABLE:
-        try:
-            from metaapi_cloud_sdk import MetaApi
-            METAAPI_AVAILABLE = True
-            print("MetaApi Cloud SDK loaded dynamically - MT5 integration enabled")
-        except ImportError as e:
-            print(f"Dynamic MetaAPI import failed: {e}")
+        if not try_import_metaapi():
+            print("MetaAPI not available - skipping MT5 integration")
             return None
     
     if not METAAPI_TOKEN or not MT5_ACCOUNT_ID:
@@ -828,16 +857,12 @@ async def mt5status_command(interaction: discord.Interaction):
             if metaapi_error:
                 status_msg += f"Error: {metaapi_error[:100]}...\n"
             
-            # Try to detect SDK presence
-            try:
-                import importlib.util
-                spec = importlib.util.find_spec("metaapi_cloud_sdk")
-                if spec is not None:
-                    status_msg += "✅ MetaAPI SDK detected but import failed\n"
-                    status_msg += "This is likely a deployment environment issue\n"
-                else:
-                    status_msg += "📦 Install command: `pip install metaapi-cloud-sdk`\n"
-            except:
+            # Try to import it now
+            status_msg += "🔄 Attempting dynamic import...\n"
+            if try_import_metaapi():
+                status_msg += "✅ MetaAPI SDK loaded successfully!\n"
+            else:
+                status_msg += "❌ Dynamic import failed\n"
                 status_msg += "📦 Install command: `pip install metaapi-cloud-sdk`\n"
                 
         elif not METAAPI_TOKEN:
