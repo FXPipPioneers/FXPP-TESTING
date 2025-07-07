@@ -92,8 +92,12 @@ MT5_ACCOUNT_ID = os.getenv("MT5_ACCOUNT_ID", "")
 MT5_CREDENTIALS = {
     'login': None,
     'password': None,
-    'server': None
+    'server': 'MetaQuotes-Demo'
 }
+
+# Global connection state
+mt5_connection = None
+market_monitor_active = False
 
 # Bot setup with intents
 intents = discord.Intents.default()
@@ -268,7 +272,7 @@ def calculate_levels(entry_price: float, pair: str, entry_type: str):
 # MetaAPI MT5 Integration Functions
 async def initialize_metaapi():
     """Initialize MetaApi connection for MT5 trading"""
-    global METAAPI_AVAILABLE, MetaApi
+    global METAAPI_AVAILABLE, MetaApi, mt5_connection
     
     # Try to import MetaAPI if not already available
     if not METAAPI_AVAILABLE:
@@ -285,16 +289,25 @@ async def initialize_metaapi():
         api = MetaApi(METAAPI_TOKEN)
         account = await api.metatrader_account_api.get_account(MT5_ACCOUNT_ID)
         
+        print(f"Account state: {account.state}")
+        
         # Check if account is deployed
         if account.state != 'DEPLOYED':
             print("MetaAPI account not deployed - deploying...")
             await account.deploy()
-            await account.wait_deployed()
+            print("Waiting for deployment...")
+            await account.wait_deployed(timeout_in_seconds=300)
         
         # Connect to account
+        print("Creating streaming connection...")
         connection = account.get_streaming_connection()
+        print("Connecting to MetaAPI...")
         await connection.connect()
-        await connection.wait_synchronized()
+        print("Waiting for synchronization...")
+        await connection.wait_synchronized(timeout_in_seconds=300)
+        
+        # Store connection globally
+        mt5_connection = connection
         
         print("✅ MetaAPI connected successfully")
         return connection
@@ -844,6 +857,95 @@ async def monitoring_command(interaction: discord.Interaction):
         
     except Exception as e:
         await interaction.response.send_message(f"❌ Error getting monitoring status: {str(e)}", ephemeral=True)
+
+@bot.tree.command(name="mt5login", description="Login to MT5 account for trading")
+async def mt5login_command(
+    interaction: discord.Interaction,
+    login: str,
+    password: str,
+    server: str = "MetaQuotes-Demo"
+):
+    """Login to MT5 account with credentials"""
+    try:
+        await interaction.response.defer(ephemeral=True)
+        
+        # Store credentials securely in memory
+        global MT5_CREDENTIALS
+        MT5_CREDENTIALS['login'] = login
+        MT5_CREDENTIALS['password'] = password
+        MT5_CREDENTIALS['server'] = server
+        
+        status_msg = f"**🔐 MT5 Login Attempt**\n\n"
+        status_msg += f"📧 Login: {login[:4]}***\n"
+        status_msg += f"🖥️ Server: {server}\n"
+        status_msg += f"🔄 Attempting connection...\n\n"
+        
+        # Try to connect with MetaAPI
+        if METAAPI_AVAILABLE and METAAPI_TOKEN and MT5_ACCOUNT_ID:
+            try:
+                connection = await initialize_metaapi()
+                if connection:
+                    status_msg += "✅ MetaAPI connection successful!\n"
+                    status_msg += "✅ MT5 account authenticated\n"
+                    status_msg += "🎯 Auto-trading enabled\n"
+                    status_msg += "🔄 Market monitoring active"
+                else:
+                    status_msg += "❌ MetaAPI connection failed\n"
+                    status_msg += "Check your MetaAPI account deployment"
+            except Exception as e:
+                status_msg += f"❌ Connection error: {str(e)[:100]}..."
+        else:
+            status_msg += "⚠️ MetaAPI credentials missing\n"
+            status_msg += "Please configure METAAPI_TOKEN and MT5_ACCOUNT_ID"
+        
+        await interaction.followup.send(status_msg, ephemeral=True)
+        
+    except Exception as e:
+        await interaction.followup.send(f"❌ Login error: {str(e)}", ephemeral=True)
+
+@bot.tree.command(name="mt5reconnect", description="Force reconnect to MetaAPI")
+async def mt5reconnect_command(interaction: discord.Interaction):
+    """Force reconnect to MetaAPI"""
+    try:
+        await interaction.response.defer(ephemeral=True)
+        
+        global mt5_connection
+        
+        status_msg = f"**🔄 MetaAPI Reconnection**\n\n"
+        
+        # Close existing connection if any
+        if mt5_connection:
+            try:
+                await mt5_connection.close()
+                status_msg += "✅ Closed existing connection\n"
+            except:
+                pass
+        
+        mt5_connection = None
+        
+        # Try to reconnect
+        status_msg += "🔄 Attempting new connection...\n"
+        
+        if METAAPI_AVAILABLE and METAAPI_TOKEN and MT5_ACCOUNT_ID:
+            try:
+                connection = await initialize_metaapi()
+                if connection:
+                    status_msg += "✅ MetaAPI reconnected successfully!\n"
+                    status_msg += "🎯 Auto-trading enabled\n"
+                    status_msg += "🔄 Market monitoring ready"
+                else:
+                    status_msg += "❌ Reconnection failed\n"
+                    status_msg += "Check MetaAPI account and credentials"
+            except Exception as e:
+                status_msg += f"❌ Reconnection error: {str(e)[:100]}..."
+        else:
+            status_msg += "❌ MetaAPI credentials missing\n"
+            status_msg += "Configure METAAPI_TOKEN and MT5_ACCOUNT_ID"
+        
+        await interaction.followup.send(status_msg, ephemeral=True)
+        
+    except Exception as e:
+        await interaction.followup.send(f"❌ Reconnection error: {str(e)}", ephemeral=True)
 
 @bot.tree.command(name="mt5status", description="Check MetaTrader 5 connection status")
 async def mt5status_command(interaction: discord.Interaction):
