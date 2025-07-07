@@ -15,13 +15,32 @@ import threading
 load_dotenv()
 
 # Import MetaApi for MT5 integration
+METAAPI_AVAILABLE = False
+metaapi_error = None
+
 try:
     from metaapi_cloud_sdk import MetaApi
     METAAPI_AVAILABLE = True
     print("MetaApi Cloud SDK loaded - MT5 integration enabled")
-except ImportError:
-    METAAPI_AVAILABLE = False
-    print("MetaApi Cloud SDK not available - Install with: pip install metaapi-cloud-sdk")
+except ImportError as e:
+    metaapi_error = str(e)
+    print(f"MetaApi Cloud SDK not available - Error: {e}")
+except Exception as e:
+    metaapi_error = str(e)
+    print(f"MetaApi Cloud SDK error: {e}")
+
+# Force MetaAPI availability check for deployment environments
+if not METAAPI_AVAILABLE:
+    try:
+        import importlib.util
+        spec = importlib.util.find_spec("metaapi_cloud_sdk")
+        if spec is not None:
+            METAAPI_AVAILABLE = True
+            print("MetaApi Cloud SDK detected via importlib - MT5 integration enabled")
+        else:
+            print("MetaApi Cloud SDK not found in system modules")
+    except Exception as e:
+        print(f"Module detection error: {e}")
 
 # Reconstruct tokens from split parts for enhanced security
 DISCORD_TOKEN_PART1 = os.getenv("DISCORD_TOKEN_PART1", "")
@@ -216,7 +235,19 @@ def calculate_levels(entry_price: float, pair: str, entry_type: str):
 # MetaAPI MT5 Integration Functions
 async def initialize_metaapi():
     """Initialize MetaApi connection for MT5 trading"""
-    if not METAAPI_AVAILABLE or not METAAPI_TOKEN or not MT5_ACCOUNT_ID:
+    global METAAPI_AVAILABLE, MetaApi
+    
+    # Try to import MetaAPI dynamically if initial import failed
+    if not METAAPI_AVAILABLE:
+        try:
+            from metaapi_cloud_sdk import MetaApi
+            METAAPI_AVAILABLE = True
+            print("MetaApi Cloud SDK loaded dynamically - MT5 integration enabled")
+        except ImportError as e:
+            print(f"Dynamic MetaAPI import failed: {e}")
+            return None
+    
+    if not METAAPI_TOKEN or not MT5_ACCOUNT_ID:
         print("MetaAPI not configured - skipping MT5 integration")
         return None
     
@@ -791,9 +822,24 @@ async def mt5status_command(interaction: discord.Interaction):
     try:
         status_msg = f"**📊 MT5 Integration Status**\n\n"
         
+        # Check MetaAPI SDK availability
         if not METAAPI_AVAILABLE:
-            status_msg += "❌ MetaAPI SDK not installed\n"
-            status_msg += "Install with: `pip install metaapi-cloud-sdk`"
+            status_msg += "❌ MetaAPI SDK not available\n"
+            if metaapi_error:
+                status_msg += f"Error: {metaapi_error[:100]}...\n"
+            
+            # Try to detect SDK presence
+            try:
+                import importlib.util
+                spec = importlib.util.find_spec("metaapi_cloud_sdk")
+                if spec is not None:
+                    status_msg += "✅ MetaAPI SDK detected but import failed\n"
+                    status_msg += "This is likely a deployment environment issue\n"
+                else:
+                    status_msg += "📦 Install command: `pip install metaapi-cloud-sdk`\n"
+            except:
+                status_msg += "📦 Install command: `pip install metaapi-cloud-sdk`\n"
+                
         elif not METAAPI_TOKEN:
             status_msg += "❌ MetaAPI token not configured\n"
             status_msg += "Set METAAPI_TOKEN environment variable"
