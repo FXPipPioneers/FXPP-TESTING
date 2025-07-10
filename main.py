@@ -5,11 +5,6 @@ import os
 from dotenv import load_dotenv
 import asyncio
 from aiohttp import web
-import random
-import json
-import time
-from typing import Dict, List, Optional
-import threading
 import re
 
 # Telegram integration
@@ -24,9 +19,6 @@ except ImportError:
 
 # Load environment variables
 load_dotenv()
-
-# Import for general requests
-import requests
 
 # Reconstruct tokens from split parts for enhanced security
 DISCORD_TOKEN_PART1 = os.getenv("DISCORD_TOKEN_PART1", "")
