@@ -6,6 +6,8 @@ from dotenv import load_dotenv
 import asyncio
 from aiohttp import web
 import re
+from datetime import datetime, timedelta
+import json
 
 # Telegram integration
 try:
@@ -38,6 +40,35 @@ TELEGRAM_PHONE_NUMBER = os.getenv("TELEGRAM_PHONE_NUMBER", "")
 TELEGRAM_SOURCE_CHAT_ID = os.getenv("TELEGRAM_SOURCE_CHAT_ID", "")  # The chat ID of the source trading group
 TELEGRAM_DEFAULT_CHANNELS = os.getenv("TELEGRAM_DEFAULT_CHANNELS", "")  # Default Discord channels for forwarding
 TELEGRAM_DEFAULT_ROLES = os.getenv("TELEGRAM_DEFAULT_ROLES", "")  # Default roles to mention
+
+# Channel tracking configuration
+TRACKING_CONFIG = {
+    "xauusd_daily": {
+        "enabled": True,
+        "sent_today": False,
+        "last_reset": datetime.now().date(),
+        "channels": ["free", "vip", "premium"]
+    },
+    "vip_signals": {
+        "enabled": True,
+        "channels": ["vip", "premium"],
+        "daily_limit": 4,
+        "sent_today": 0
+    },
+    "premium_signals": {
+        "enabled": True,
+        "channels": ["premium"],
+        "daily_limit": 10,
+        "sent_today": 0
+    }
+}
+
+# Channel mapping - these should match your actual Discord channel names or IDs
+CHANNEL_MAPPING = {
+    "free": os.getenv("FREE_SIGNALS_CHANNEL", ""),
+    "vip": os.getenv("VIP_SIGNALS_CHANNEL", ""),
+    "premium": os.getenv("PREMIUM_SIGNALS_CHANNEL", "")
+}
 
 # Bot setup with intents
 intents = discord.Intents.default()
@@ -112,71 +143,55 @@ PAIR_CONFIG = {
 
 # Telegram Signal Parsing Functions
 def parse_telegram_signal(message_text: str) -> dict:
-    """Parse trading signal from Telegram message text"""
+    """Parse trading signal from Telegram message text with enhanced filtering"""
     signal_data = {}
     
-    # Common trading pair patterns
-    pair_patterns = [
-        r'(XAUUSD|GOLD|XAU)',
-        r'(GBPJPY|GBP/JPY)',
-        r'(EURUSD|EUR/USD)',
-        r'(GBPUSD|GBP/USD)',
-        r'(AUDUSD|AUD/USD)',
-        r'(NZDUSD|NZD/USD)',
-        r'(USDCAD|USD/CAD)',
-        r'(USDCHF|USD/CHF)',
-        r'(GBPCHF|GBP/CHF)',
-        r'(CADCHF|CAD/CHF)',
-        r'(AUDCHF|AUD/CHF)',
-        r'(CHFJPY|CHF/JPY)',
-        r'(CADJPY|CAD/JPY)',
-        r'(AUDJPY|AUD/JPY)',
-        r'(GBPCAD|GBP/CAD)',
-        r'(EURCAD|EUR/CAD)',
-        r'(AUDCAD|AUD/CAD)',
-        r'(AUDNZD|AUD/NZD)',
-        r'(US100|NASDAQ|NAS100)',
-        r'(US500|S&P500|SPX500)',
-        r'(GER40|DAX|GERMANY40)',
-        r'(BTCUSD|BTC/USD|BITCOIN)',
-        r'(USDJPY|USD/JPY)'
+    # Check for required keywords first
+    required_keywords = ['ENTRY', 'TAKE PROFIT', 'STOP LOSS']
+    message_upper = message_text.upper()
+    
+    if not all(keyword in message_upper for keyword in required_keywords):
+        return signal_data  # Return empty dict if keywords not found
+    
+    # Find entry type and pair together (Buy XAUUSD, Sell GBPJPY pattern)
+    entry_pair_patterns = [
+        (r'(BUY|SELL)\s+(XAUUSD|GOLD|XAU)', 'XAUUSD'),
+        (r'(BUY|SELL)\s+(GBPJPY|GBP/JPY)', 'GBPJPY'),
+        (r'(BUY|SELL)\s+(EURUSD|EUR/USD)', 'EURUSD'),
+        (r'(BUY|SELL)\s+(GBPUSD|GBP/USD)', 'GBPUSD'),
+        (r'(BUY|SELL)\s+(AUDUSD|AUD/USD)', 'AUDUSD'),
+        (r'(BUY|SELL)\s+(NZDUSD|NZD/USD)', 'NZDUSD'),
+        (r'(BUY|SELL)\s+(USDCAD|USD/CAD)', 'USDCAD'),
+        (r'(BUY|SELL)\s+(USDCHF|USD/CHF)', 'USDCHF'),
+        (r'(BUY|SELL)\s+(GBPCHF|GBP/CHF)', 'GBPCHF'),
+        (r'(BUY|SELL)\s+(CADCHF|CAD/CHF)', 'CADCHF'),
+        (r'(BUY|SELL)\s+(AUDCHF|AUD/CHF)', 'AUDCHF'),
+        (r'(BUY|SELL)\s+(CHFJPY|CHF/JPY)', 'CHFJPY'),
+        (r'(BUY|SELL)\s+(CADJPY|CAD/JPY)', 'CADJPY'),
+        (r'(BUY|SELL)\s+(AUDJPY|AUD/JPY)', 'AUDJPY'),
+        (r'(BUY|SELL)\s+(GBPCAD|GBP/CAD)', 'GBPCAD'),
+        (r'(BUY|SELL)\s+(EURCAD|EUR/CAD)', 'EURCAD'),
+        (r'(BUY|SELL)\s+(AUDCAD|AUD/CAD)', 'AUDCAD'),
+        (r'(BUY|SELL)\s+(AUDNZD|AUD/NZD)', 'AUDNZD'),
+        (r'(BUY|SELL)\s+(US100|NASDAQ|NAS100)', 'US100'),
+        (r'(BUY|SELL)\s+(US500|S&P500|SPX500)', 'US500'),
+        (r'(BUY|SELL)\s+(GER40|DAX|GERMANY40)', 'GER40'),
+        (r'(BUY|SELL)\s+(BTCUSD|BTC/USD|BITCOIN)', 'BTCUSD'),
+        (r'(BUY|SELL)\s+(USDJPY|USD/JPY)', 'USDJPY')
     ]
     
-    # Try to find trading pair
-    for pattern in pair_patterns:
-        match = re.search(pattern, message_text.upper())
+    # Try to find entry type and pair together
+    for pattern, normalized_pair in entry_pair_patterns:
+        match = re.search(pattern, message_upper)
         if match:
-            pair_found = match.group(1)
-            # Normalize pair names
-            if pair_found in ['GOLD', 'XAU']:
-                signal_data['pair'] = 'XAUUSD'
-            elif pair_found in ['NASDAQ', 'NAS100']:
-                signal_data['pair'] = 'US100'
-            elif pair_found in ['S&P500', 'SPX500']:
-                signal_data['pair'] = 'US500'
-            elif pair_found in ['DAX', 'GERMANY40']:
-                signal_data['pair'] = 'GER40'
-            elif pair_found in ['BTC/USD', 'BITCOIN']:
-                signal_data['pair'] = 'BTCUSD'
-            elif '/' in pair_found:
-                signal_data['pair'] = pair_found.replace('/', '')
-            else:
-                signal_data['pair'] = pair_found
-            break
-    
-    # Try to find entry type
-    entry_patterns = [
-        (r'(BUY\s*LIMIT|LONG\s*LIMIT)', 'Buy limit'),
-        (r'(SELL\s*LIMIT|SHORT\s*LIMIT)', 'Sell limit'),
-        (r'(BUY\s*STOP|LONG\s*STOP|BUY\s*EXECUTION)', 'Buy execution'),
-        (r'(SELL\s*STOP|SHORT\s*STOP|SELL\s*EXECUTION)', 'Sell execution'),
-        (r'(BUY|LONG)', 'Buy limit'),
-        (r'(SELL|SHORT)', 'Sell limit')
-    ]
-    
-    for pattern, entry_type in entry_patterns:
-        if re.search(pattern, message_text.upper()):
-            signal_data['entry_type'] = entry_type
+            entry_action = match.group(1)
+            signal_data['pair'] = normalized_pair
+            
+            # Set entry type based on action
+            if entry_action == 'BUY':
+                signal_data['entry_type'] = 'Buy execution'
+            else:  # SELL
+                signal_data['entry_type'] = 'Sell execution'
             break
     
     # Try to find entry price
@@ -202,17 +217,70 @@ def is_valid_signal(signal_data: dict) -> bool:
     required_fields = ['pair', 'entry_type', 'entry_price']
     return all(field in signal_data for field in required_fields)
 
-async def forward_telegram_signal(signal_data: dict, original_message: str):
-    """Forward parsed signal to Discord using the entry command logic"""
-    try:
-        if not TELEGRAM_DEFAULT_CHANNELS:
-            print("No default channels configured for Telegram forwarding")
-            return
+def reset_daily_counters():
+    """Reset daily tracking counters if it's a new day"""
+    today = datetime.now().date()
+    
+    # Reset XAUUSD daily tracking
+    if TRACKING_CONFIG["xauusd_daily"]["last_reset"] != today:
+        TRACKING_CONFIG["xauusd_daily"]["sent_today"] = False
+        TRACKING_CONFIG["xauusd_daily"]["last_reset"] = today
+    
+    # Reset VIP and Premium signal counters
+    if TRACKING_CONFIG["vip_signals"].get("last_reset", today) != today:
+        TRACKING_CONFIG["vip_signals"]["sent_today"] = 0
+        TRACKING_CONFIG["vip_signals"]["last_reset"] = today
+    
+    if TRACKING_CONFIG["premium_signals"].get("last_reset", today) != today:
+        TRACKING_CONFIG["premium_signals"]["sent_today"] = 0
+        TRACKING_CONFIG["premium_signals"]["last_reset"] = today
+
+def determine_target_channels(pair: str) -> list:
+    """Determine which channels should receive the signal based on pair and limits"""
+    reset_daily_counters()
+    target_channels = []
+    
+    if pair == "XAUUSD":
+        # XAUUSD only goes to free, and only once per day
+        if (TRACKING_CONFIG["xauusd_daily"]["enabled"] and 
+            not TRACKING_CONFIG["xauusd_daily"]["sent_today"]):
+            target_channels = ["free", "vip", "premium"]
+            TRACKING_CONFIG["xauusd_daily"]["sent_today"] = True
+        else:
+            return []  # No channels if already sent or disabled
+    else:
+        # Other pairs go to VIP and Premium based on limits
+        vip_config = TRACKING_CONFIG["vip_signals"]
+        premium_config = TRACKING_CONFIG["premium_signals"]
         
+        # Check VIP limit (includes VIP and Premium)
+        if (vip_config["enabled"] and 
+            vip_config["sent_today"] < vip_config["daily_limit"]):
+            target_channels.extend(["vip", "premium"])
+            vip_config["sent_today"] += 1
+        
+        # Check Premium limit (Premium only, additional signals)
+        elif (premium_config["enabled"] and 
+              premium_config["sent_today"] < premium_config["daily_limit"]):
+            target_channels.append("premium")
+            premium_config["sent_today"] += 1
+    
+    return target_channels
+
+async def forward_telegram_signal(signal_data: dict, original_message: str):
+    """Forward parsed signal to Discord using smart routing logic"""
+    try:
         # Get default guild (first guild the bot is in)
         guild = bot.guilds[0] if bot.guilds else None
         if not guild:
             print("Bot not in any Discord servers")
+            return
+        
+        # Determine target channels based on pair and limits
+        target_channels = determine_target_channels(signal_data['pair'])
+        
+        if not target_channels:
+            print(f"🚫 Signal blocked: {signal_data['pair']} - daily limits reached or tracking disabled")
             return
         
         # Calculate TP and SL levels
@@ -253,37 +321,39 @@ Stop Loss: {levels['sl']}
             if role_mentions:
                 signal_message += f"\n\n{' '.join(role_mentions)}"
         
-        # Send to configured channels
-        channel_list = [ch.strip() for ch in TELEGRAM_DEFAULT_CHANNELS.split(',')]
+        # Send to target channels
         sent_channels = []
         sent_messages = []
-        channel_ids = []
         
-        for channel_identifier in channel_list:
+        for channel_type in target_channels:
+            channel_id = CHANNEL_MAPPING.get(channel_type)
+            if not channel_id:
+                print(f"⚠️ Channel mapping not found for {channel_type}")
+                continue
+                
             target_channel = None
             
             # Try to parse as channel mention
-            if channel_identifier.startswith('<#') and channel_identifier.endswith('>'):
-                channel_id = int(channel_identifier[2:-1])
+            if channel_id.startswith('<#') and channel_id.endswith('>'):
+                channel_id = int(channel_id[2:-1])
                 target_channel = bot.get_channel(channel_id)
             # Try to parse as channel ID
-            elif channel_identifier.isdigit():
-                target_channel = bot.get_channel(int(channel_identifier))
+            elif channel_id.isdigit():
+                target_channel = bot.get_channel(int(channel_id))
             # Try to find by name
             else:
-                target_channel = discord.utils.get(guild.channels, name=channel_identifier)
+                target_channel = discord.utils.get(guild.channels, name=channel_id)
             
             if target_channel and isinstance(target_channel, discord.TextChannel):
                 try:
                     sent_message = await target_channel.send(signal_message)
-                    sent_channels.append(target_channel.name)
+                    sent_channels.append(f"{channel_type}({target_channel.name})")
                     sent_messages.append(sent_message)
-                    channel_ids.append(target_channel.id)
                 except Exception as e:
                     print(f"Error sending to #{target_channel.name}: {str(e)}")
         
         if sent_messages:
-            print(f"✅ Telegram signal forwarded to {len(sent_channels)} channels: {', '.join(sent_channels)}")
+            print(f"✅ {signal_data['pair']} signal forwarded to {len(sent_channels)} channels: {', '.join(sent_channels)}")
         else:
             print("❌ No messages sent - check channel configuration")
             
@@ -607,11 +677,11 @@ async def telegram_command(interaction: discord.Interaction):
         status_msg = f"**📱 Telegram Integration Status**\n\n"
         
         # Check if Telegram is available
-        if not TELEGRAM_AVAILABLE:
+        if TELEGRAM_AVAILABLE:
+            status_msg += "✅ Telegram integration installed\n\n"
+        else:
             status_msg += "❌ Telegram integration not installed\n"
             status_msg += "💡 Install with: pip install pyrogram tgcrypto\n\n"
-        else:
-            status_msg += "✅ Telegram integration installed\n\n"
         
         # Check configuration
         config_status = []
@@ -648,7 +718,7 @@ async def telegram_command(interaction: discord.Interaction):
         status_msg += "\n".join(config_status)
         
         # Overall status
-        if telegram_client and TELEGRAM_API_ID and TELEGRAM_API_HASH:
+        if TELEGRAM_AVAILABLE and TELEGRAM_API_ID and TELEGRAM_API_HASH and TELEGRAM_PHONE_NUMBER:
             status_msg += "\n\n🎯 Status: Ready for signal forwarding"
         else:
             status_msg += "\n\n❌ Status: Not configured"
@@ -658,6 +728,130 @@ async def telegram_command(interaction: discord.Interaction):
         
     except Exception as e:
         await interaction.response.send_message(f"❌ Error checking Telegram status: {str(e)}", ephemeral=True)
+
+@bot.tree.command(name="tracking", description="Manage signal tracking settings")
+@app_commands.describe(
+    action="Action to perform",
+    target="What to control (xauusd, vip, premium, all)",
+    channel_type="Channel type for sleep mode (free, vip, premium, all)"
+)
+async def tracking_command(
+    interaction: discord.Interaction,
+    action: str,
+    target: str = "all",
+    channel_type: str = "all"
+):
+    """Manage signal tracking settings - sleep mode, resume, and status"""
+    
+    try:
+        if action == "sleep":
+            # Put tracking into sleep mode
+            if target == "xauusd":
+                if channel_type == "all":
+                    TRACKING_CONFIG["xauusd_daily"]["enabled"] = False
+                    await interaction.response.send_message("🛌 XAUUSD tracking disabled for all channels (free, vip, premium) until manually resumed.", ephemeral=True)
+                else:
+                    await interaction.response.send_message("⚠️ XAUUSD tracking affects all channels. Use target='xauusd' and channel_type='all'.", ephemeral=True)
+            elif target == "vip":
+                TRACKING_CONFIG["vip_signals"]["enabled"] = False
+                await interaction.response.send_message("🛌 VIP signals tracking disabled (affects vip and premium channels) until manually resumed.", ephemeral=True)
+            elif target == "premium":
+                TRACKING_CONFIG["premium_signals"]["enabled"] = False
+                await interaction.response.send_message("🛌 Premium signals tracking disabled until manually resumed.", ephemeral=True)
+            elif target == "all":
+                TRACKING_CONFIG["xauusd_daily"]["enabled"] = False
+                TRACKING_CONFIG["vip_signals"]["enabled"] = False
+                TRACKING_CONFIG["premium_signals"]["enabled"] = False
+                await interaction.response.send_message("🛌 All signal tracking disabled until manually resumed.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Invalid target. Use: xauusd, vip, premium, or all", ephemeral=True)
+        
+        elif action == "resume":
+            # Resume tracking
+            if target == "xauusd":
+                TRACKING_CONFIG["xauusd_daily"]["enabled"] = True
+                await interaction.response.send_message("✅ XAUUSD tracking resumed for all channels.", ephemeral=True)
+            elif target == "vip":
+                TRACKING_CONFIG["vip_signals"]["enabled"] = True
+                await interaction.response.send_message("✅ VIP signals tracking resumed.", ephemeral=True)
+            elif target == "premium":
+                TRACKING_CONFIG["premium_signals"]["enabled"] = True
+                await interaction.response.send_message("✅ Premium signals tracking resumed.", ephemeral=True)
+            elif target == "all":
+                TRACKING_CONFIG["xauusd_daily"]["enabled"] = True
+                TRACKING_CONFIG["vip_signals"]["enabled"] = True
+                TRACKING_CONFIG["premium_signals"]["enabled"] = True
+                await interaction.response.send_message("✅ All signal tracking resumed.", ephemeral=True)
+            else:
+                await interaction.response.send_message("❌ Invalid target. Use: xauusd, vip, premium, or all", ephemeral=True)
+        
+        elif action == "status":
+            # Show current tracking status
+            reset_daily_counters()  # Ensure counters are up to date
+            
+            status_msg = "**🎯 Signal Tracking Status**\n\n"
+            
+            # XAUUSD Status
+            xauusd_config = TRACKING_CONFIG["xauusd_daily"]
+            xauusd_status = "✅ Active" if xauusd_config["enabled"] else "🛌 Sleeping"
+            xauusd_sent = "✅ Sent today" if xauusd_config["sent_today"] else "⏳ Not sent yet"
+            status_msg += f"**XAUUSD Daily Signal (Free, VIP, Premium):**\n"
+            status_msg += f"• Status: {xauusd_status}\n"
+            status_msg += f"• Today: {xauusd_sent}\n\n"
+            
+            # VIP Status
+            vip_config = TRACKING_CONFIG["vip_signals"]
+            vip_status = "✅ Active" if vip_config["enabled"] else "🛌 Sleeping"
+            vip_count = f"{vip_config['sent_today']}/{vip_config['daily_limit']}"
+            status_msg += f"**VIP Signals (VIP, Premium channels):**\n"
+            status_msg += f"• Status: {vip_status}\n"
+            status_msg += f"• Today: {vip_count} signals\n\n"
+            
+            # Premium Status
+            premium_config = TRACKING_CONFIG["premium_signals"]
+            premium_status = "✅ Active" if premium_config["enabled"] else "🛌 Sleeping"
+            premium_count = f"{premium_config['sent_today']}/{premium_config['daily_limit']}"
+            status_msg += f"**Premium Signals (Premium channel only):**\n"
+            status_msg += f"• Status: {premium_status}\n"
+            status_msg += f"• Today: {premium_count} signals\n\n"
+            
+            # Channel mapping info
+            status_msg += "**📋 Channel Configuration:**\n"
+            status_msg += f"• Free: {CHANNEL_MAPPING.get('free', 'Not configured')}\n"
+            status_msg += f"• VIP: {CHANNEL_MAPPING.get('vip', 'Not configured')}\n"
+            status_msg += f"• Premium: {CHANNEL_MAPPING.get('premium', 'Not configured')}\n"
+            
+            await interaction.response.send_message(status_msg, ephemeral=True)
+        
+        else:
+            await interaction.response.send_message("❌ Invalid action. Use: sleep, resume, or status", ephemeral=True)
+            
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Error managing tracking: {str(e)}", ephemeral=True)
+
+@tracking_command.autocomplete('action')
+async def tracking_action_autocomplete(interaction: discord.Interaction, current: str):
+    actions = ['sleep', 'resume', 'status']
+    return [
+        app_commands.Choice(name=action, value=action)
+        for action in actions if current.lower() in action.lower()
+    ]
+
+@tracking_command.autocomplete('target')
+async def tracking_target_autocomplete(interaction: discord.Interaction, current: str):
+    targets = ['xauusd', 'vip', 'premium', 'all']
+    return [
+        app_commands.Choice(name=target, value=target)
+        for target in targets if current.lower() in target.lower()
+    ]
+
+@tracking_command.autocomplete('channel_type')
+async def tracking_channel_type_autocomplete(interaction: discord.Interaction, current: str):
+    channel_types = ['free', 'vip', 'premium', 'all']
+    return [
+        app_commands.Choice(name=channel_type, value=channel_type)
+        for channel_type in channel_types if current.lower() in channel_type.lower()
+    ]
 
 # Error handling
 @bot.event
