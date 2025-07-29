@@ -3,9 +3,13 @@
 ## Updated Deployment for Render.com (with Telegram Integration)
 
 ### Build Configuration
-- **Build Command**: `chmod +x install_deps.sh && ./install_deps.sh`
+- **Build Command**: `pip install --upgrade pip && pip install discord.py==2.5.2 python-dotenv==1.1.0 aiohttp==3.12.13 requests pyrogram==2.0.106 tgcrypto==1.2.5`
 - **Start Command**: `python main.py`
 - **Runtime**: `python-3.11.0`
+
+### Alternative Build Commands (if primary fails)
+1. With no-cache: `pip install --no-cache-dir --upgrade pip && pip install --no-cache-dir discord.py python-dotenv aiohttp requests pyrogram tgcrypto`
+2. Force reinstall: `pip install --upgrade pip --force-reinstall && pip install --force-reinstall pyrogram==2.0.106 tgcrypto==1.2.5 discord.py==2.5.2 python-dotenv==1.1.0 aiohttp==3.12.13 requests`
 
 ### Required Environment Variables
 
