@@ -27,6 +27,7 @@ This is a professional Discord bot designed for trading signal distribution with
    - Automatic TP/SL calculation based on pip values
    - Multi-channel distribution
    - Role tagging functionality
+   - Broker warning for BTCUSD, US100, GER40 pairs
 
 2. **`/stats` Command**: Displays trading performance statistics
    - Customizable date ranges
@@ -34,6 +35,11 @@ This is a professional Discord bot designed for trading signal distribution with
    - SL hit tracking
    - Win rate calculations
    - Multi-channel distribution
+
+3. **`/telegram` Command**: Check Telegram integration status
+   - Configuration validation
+   - Connection status
+   - Setup guidance
 
 ### Trading Logic
 - **Pip Calculation Engine**: Instrument-specific pip value calculations
@@ -48,6 +54,21 @@ This is a professional Discord bot designed for trading signal distribution with
 - **Multi-channel Broadcasting**: Send signals to multiple channels simultaneously
 - **Role Tagging System**: Configurable role mentions at message bottom
 - **Immediate Delivery**: Real-time signal distribution without delays
+
+### Telegram Integration
+- **Automatic Signal Forwarding**: Monitors Telegram groups for trading signals
+- **Intelligent Signal Parsing**: Recognizes trading pairs, entry types, and prices
+- **Instant Relay**: Forwards signals to Discord without delays
+- **Broker Warnings**: Adds specific warnings for volatile pairs (BTCUSD, US100, GER40)
+- **Configurable Monitoring**: Can monitor specific chat IDs or all accessible chats
+
+### Timed Auto-Role System
+- **Automatic Role Assignment**: Assigns specified roles to new members upon joining
+- **Configurable Duration**: Set custom expiration time (default 24 hours)
+- **Automatic Role Removal**: Removes expired roles via background monitoring task
+- **Custom DM Notifications**: Sends personalized messages when roles expire
+- **Persistent Storage**: Maintains member tracking across bot restarts
+- **Admin Controls**: `/timedautorole` command for enable/disable/status management
 
 ## Data Flow
 
@@ -79,6 +100,8 @@ PAIR_CONFIG = {
 - `discord.py==2.5.2`: Discord API interaction
 - `python-dotenv==1.1.0`: Environment variable management
 - `aiohttp==3.12.13`: Web server functionality
+- `pyrogram==2.0.106`: Telegram integration
+- `tgcrypto==1.2.5`: Telegram encryption support
 
 ### Discord API Requirements
 - Bot token with appropriate permissions:
@@ -89,11 +112,24 @@ PAIR_CONFIG = {
 
 ### Environment Variables
 - `DISCORD_TOKEN_PART1`: First half of Discord bot token
-- `DISCORD_TOKEN_PART2`: Second half of Discord bot token
+- `DISCORD_TOKEN_PART2`: Second half of Discord bot token  
 - `DISCORD_CLIENT_ID_PART1`: First half of Discord client ID
 - `DISCORD_CLIENT_ID_PART2`: Second half of Discord client ID
-- `METAAPI_TOKEN`: MetaAPI cloud token for real trading (required for trade execution)
-- `MT5_ACCOUNT_ID`: MetaTrader 5 account ID connected to MetaAPI (required for trade execution)
+
+### Discord Bot Permissions
+For the auto-role system to work, the bot needs:
+- **Manage Roles**: To assign and remove roles from members
+- **Send Messages**: To send notifications and confirmations
+- **Use Slash Commands**: For the `/timedautorole` command
+- **View Members**: To detect new member joins
+
+### Telegram Integration Variables
+- `TELEGRAM_API_ID`: Telegram API ID from my.telegram.org
+- `TELEGRAM_API_HASH`: Telegram API hash from my.telegram.org
+- `TELEGRAM_PHONE_NUMBER`: Phone number associated with Telegram account
+- `TELEGRAM_SOURCE_CHAT_ID`: Chat ID of the source trading group (optional)
+- `TELEGRAM_DEFAULT_CHANNELS`: Default Discord channels for forwarding (comma-separated)
+- `TELEGRAM_DEFAULT_ROLES`: Default roles to mention (comma-separated)
 
 ## Deployment Strategy
 
@@ -120,15 +156,21 @@ Preferred communication style: Simple, everyday language.
 
 ## Recent Changes
 
-- June 27, 2025: Removed OANDA API integration completely per user request
-- June 27, 2025: MetaAPI now the sole trading integration platform
-- June 27, 2025: Created complete deployment package (discord-trading-bot-latest.tar.gz)
-- June 26, 2025: Implemented MetaTrader 5 integration for automatic trade execution
-- June 26, 2025: Added market monitoring system with automatic TP/SL hit detection
-- June 26, 2025: Fixed channel selection issue for servers with duplicate channel names
-- June 26, 2025: Added randomized Discord reply messages for TP1/TP2/TP3/SL hits
-- June 26, 2025: Created /channels command to help with precise channel selection
-- June 26, 2025: Added /signals command to monitor active trading signals
+- July 29, 2025: Merged Telegram signal forwarding with timed auto-role system:
+  - Added complete Telegram integration for automatic signal parsing and forwarding
+  - Implemented intelligent signal parsing for all trading pairs
+  - Added broker warnings for volatile pairs (BTCUSD, US100, GER40)
+  - Created /telegram command for integration status checking
+  - Enhanced entry command with broker warnings
+  - Maintained all auto-role functionality (assignment, removal, monitoring, listing)
+  - Combined both systems in single unified bot
+- January 10, 2025: Added Telegram integration for automatic signal forwarding
+- January 10, 2025: Added broker warning messages for BTCUSD, US100, and GER40 pairs
+- January 10, 2025: Implemented intelligent signal parsing from Telegram messages
+- January 10, 2025: Added /telegram command for integration status checking
+- July 10, 2025: Cleaned up codebase by removing all failed trading integration attempts (MetaAPI, OANDA, MT5)
+- July 10, 2025: Simplified bot to focus on core signal distribution functionality
+- July 10, 2025: Updated deployment files to include Telegram dependencies
 
 ## Changelog
 

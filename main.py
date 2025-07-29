@@ -1,13 +1,13 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord import app_commands
 import os
 from dotenv import load_dotenv
 import asyncio
 from aiohttp import web
-import re
-from datetime import datetime, timedelta
 import json
+from datetime import datetime, timedelta
+import re
 
 # Telegram integration
 try:
@@ -31,8 +31,6 @@ DISCORD_CLIENT_ID_PART1 = os.getenv("DISCORD_CLIENT_ID_PART1", "")
 DISCORD_CLIENT_ID_PART2 = os.getenv("DISCORD_CLIENT_ID_PART2", "")
 DISCORD_CLIENT_ID = DISCORD_CLIENT_ID_PART1 + DISCORD_CLIENT_ID_PART2
 
-
-
 # Telegram configuration for signal forwarding
 TELEGRAM_API_ID = os.getenv("TELEGRAM_API_ID", "")
 TELEGRAM_API_HASH = os.getenv("TELEGRAM_API_HASH", "")
@@ -41,39 +39,20 @@ TELEGRAM_SOURCE_CHAT_ID = os.getenv("TELEGRAM_SOURCE_CHAT_ID", "")  # The chat I
 TELEGRAM_DEFAULT_CHANNELS = os.getenv("TELEGRAM_DEFAULT_CHANNELS", "")  # Default Discord channels for forwarding
 TELEGRAM_DEFAULT_ROLES = os.getenv("TELEGRAM_DEFAULT_ROLES", "")  # Default roles to mention
 
-# Channel tracking configuration
-TRACKING_CONFIG = {
-    "xauusd_daily": {
-        "enabled": True,
-        "sent_today": False,
-        "last_reset": datetime.now().date(),
-        "channels": ["free", "vip", "premium"]
-    },
-    "vip_signals": {
-        "enabled": True,
-        "channels": ["vip", "premium"],
-        "daily_limit": 4,
-        "sent_today": 0
-    },
-    "premium_signals": {
-        "enabled": True,
-        "channels": ["premium"],
-        "daily_limit": 10,
-        "sent_today": 0
-    }
-}
-
-# Channel mapping - these should match your actual Discord channel names or IDs
-CHANNEL_MAPPING = {
-    "free": os.getenv("FREE_SIGNALS_CHANNEL", ""),
-    "vip": os.getenv("VIP_SIGNALS_CHANNEL", ""),
-    "premium": os.getenv("PREMIUM_SIGNALS_CHANNEL", "")
-}
-
 # Bot setup with intents
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
+intents.members = True  # Required for member join events
+
+# Auto-role system storage
+AUTO_ROLE_CONFIG = {
+    "enabled": False,
+    "role_id": None,
+    "duration_hours": 24,
+    "custom_message": "Your 1-day free trial has ended. Thank you for trying our service!",
+    "active_members": {}  # member_id: {"role_added_time": datetime, "role_id": role_id}
+}
 
 class TradingBot(commands.Bot):
     def __init__(self):
@@ -92,11 +71,141 @@ class TradingBot(commands.Bot):
         if self.user:
             print(f'Bot ID: {self.user.id}')
         
+        # Start the role removal task
+        if not self.role_removal_task.is_running():
+            self.role_removal_task.start()
+        
+        # Load auto-role config if it exists
+        await self.load_auto_role_config()
+        
         # Check Telegram integration
         if telegram_client:
             print("✅ Telegram integration ready")
         else:
             print("⚠️ Telegram integration not configured")
+
+    async def on_member_join(self, member):
+        """Handle new member joins and assign auto-role if enabled"""
+        if not AUTO_ROLE_CONFIG["enabled"] or not AUTO_ROLE_CONFIG["role_id"]:
+            return
+        
+        try:
+            role = member.guild.get_role(AUTO_ROLE_CONFIG["role_id"])
+            if not role:
+                print(f"❌ Auto-role not found in guild {member.guild.name}")
+                return
+            
+            # Add the role to the new member
+            await member.add_roles(role, reason="Auto-role for new member")
+            
+            # Record the member for role removal tracking
+            AUTO_ROLE_CONFIG["active_members"][str(member.id)] = {
+                "role_added_time": datetime.now().isoformat(),
+                "role_id": AUTO_ROLE_CONFIG["role_id"],
+                "guild_id": member.guild.id
+            }
+            
+            # Save the updated config
+            await self.save_auto_role_config()
+            
+            print(f"✅ Auto-role '{role.name}' added to {member.display_name} ({member.id})")
+            
+        except discord.Forbidden:
+            print(f"❌ No permission to assign role to {member.display_name}")
+        except Exception as e:
+            print(f"❌ Error assigning auto-role to {member.display_name}: {str(e)}")
+
+    async def load_auto_role_config(self):
+        """Load auto-role configuration from file if it exists"""
+        try:
+            if os.path.exists("auto_role_config.json"):
+                with open("auto_role_config.json", "r") as f:
+                    loaded_config = json.load(f)
+                    AUTO_ROLE_CONFIG.update(loaded_config)
+                print("✅ Auto-role configuration loaded")
+        except Exception as e:
+            print(f"⚠️ Error loading auto-role config: {str(e)}")
+
+    async def save_auto_role_config(self):
+        """Save auto-role configuration to file"""
+        try:
+            with open("auto_role_config.json", "w") as f:
+                json.dump(AUTO_ROLE_CONFIG, f, indent=2)
+        except Exception as e:
+            print(f"❌ Error saving auto-role config: {str(e)}")
+
+    @tasks.loop(minutes=30)  # Check every 30 minutes
+    async def role_removal_task(self):
+        """Background task to remove expired roles and send DMs"""
+        if not AUTO_ROLE_CONFIG["enabled"] or not AUTO_ROLE_CONFIG["active_members"]:
+            return
+        
+        current_time = datetime.now()
+        expired_members = []
+        
+        for member_id, data in AUTO_ROLE_CONFIG["active_members"].items():
+            try:
+                # Parse the stored datetime
+                role_added_time = datetime.fromisoformat(data["role_added_time"])
+                duration = timedelta(hours=AUTO_ROLE_CONFIG["duration_hours"])
+                
+                if current_time >= role_added_time + duration:
+                    expired_members.append(member_id)
+            except Exception as e:
+                print(f"❌ Error processing member {member_id}: {str(e)}")
+                expired_members.append(member_id)  # Remove corrupted entries
+        
+        # Process expired members
+        for member_id in expired_members:
+            await self.remove_expired_role(member_id)
+        
+        # Save updated config if there were changes
+        if expired_members:
+            await self.save_auto_role_config()
+
+    async def remove_expired_role(self, member_id):
+        """Remove expired role from member and send DM"""
+        try:
+            data = AUTO_ROLE_CONFIG["active_members"].get(member_id)
+            if not data:
+                return
+            
+            # Get the guild and member
+            guild = self.get_guild(data["guild_id"])
+            if not guild:
+                print(f"❌ Guild not found for member {member_id}")
+                del AUTO_ROLE_CONFIG["active_members"][member_id]
+                return
+            
+            member = guild.get_member(int(member_id))
+            if not member:
+                print(f"❌ Member {member_id} not found in guild")
+                del AUTO_ROLE_CONFIG["active_members"][member_id]
+                return
+            
+            # Get the role
+            role = guild.get_role(data["role_id"])
+            if role and role in member.roles:
+                await member.remove_roles(role, reason="Auto-role expired")
+                print(f"✅ Removed expired role '{role.name}' from {member.display_name}")
+            
+            # Send DM to the member
+            try:
+                await member.send(AUTO_ROLE_CONFIG["custom_message"])
+                print(f"✅ Sent expiration DM to {member.display_name}")
+            except discord.Forbidden:
+                print(f"⚠️ Could not send DM to {member.display_name} (DMs disabled)")
+            except Exception as e:
+                print(f"❌ Error sending DM to {member.display_name}: {str(e)}")
+            
+            # Remove from active tracking
+            del AUTO_ROLE_CONFIG["active_members"][member_id]
+            
+        except Exception as e:
+            print(f"❌ Error removing expired role for member {member_id}: {str(e)}")
+            # Clean up corrupted entry
+            if member_id in AUTO_ROLE_CONFIG["active_members"]:
+                del AUTO_ROLE_CONFIG["active_members"][member_id]
 
 bot = TradingBot()
 
@@ -112,8 +221,6 @@ if TELEGRAM_AVAILABLE and TELEGRAM_API_ID and TELEGRAM_API_HASH:
     print("Telegram client initialized")
 else:
     print("Telegram integration not configured")
-
-# Trading pair configurations
 
 # Trading pair configurations
 PAIR_CONFIG = {
@@ -143,55 +250,71 @@ PAIR_CONFIG = {
 
 # Telegram Signal Parsing Functions
 def parse_telegram_signal(message_text: str) -> dict:
-    """Parse trading signal from Telegram message text with enhanced filtering"""
+    """Parse trading signal from Telegram message text"""
     signal_data = {}
     
-    # Check for required keywords first
-    required_keywords = ['ENTRY', 'TAKE PROFIT', 'STOP LOSS']
-    message_upper = message_text.upper()
-    
-    if not all(keyword in message_upper for keyword in required_keywords):
-        return signal_data  # Return empty dict if keywords not found
-    
-    # Find entry type and pair together (Buy XAUUSD, Sell GBPJPY pattern)
-    entry_pair_patterns = [
-        (r'(BUY|SELL)\s+(XAUUSD|GOLD|XAU)', 'XAUUSD'),
-        (r'(BUY|SELL)\s+(GBPJPY|GBP/JPY)', 'GBPJPY'),
-        (r'(BUY|SELL)\s+(EURUSD|EUR/USD)', 'EURUSD'),
-        (r'(BUY|SELL)\s+(GBPUSD|GBP/USD)', 'GBPUSD'),
-        (r'(BUY|SELL)\s+(AUDUSD|AUD/USD)', 'AUDUSD'),
-        (r'(BUY|SELL)\s+(NZDUSD|NZD/USD)', 'NZDUSD'),
-        (r'(BUY|SELL)\s+(USDCAD|USD/CAD)', 'USDCAD'),
-        (r'(BUY|SELL)\s+(USDCHF|USD/CHF)', 'USDCHF'),
-        (r'(BUY|SELL)\s+(GBPCHF|GBP/CHF)', 'GBPCHF'),
-        (r'(BUY|SELL)\s+(CADCHF|CAD/CHF)', 'CADCHF'),
-        (r'(BUY|SELL)\s+(AUDCHF|AUD/CHF)', 'AUDCHF'),
-        (r'(BUY|SELL)\s+(CHFJPY|CHF/JPY)', 'CHFJPY'),
-        (r'(BUY|SELL)\s+(CADJPY|CAD/JPY)', 'CADJPY'),
-        (r'(BUY|SELL)\s+(AUDJPY|AUD/JPY)', 'AUDJPY'),
-        (r'(BUY|SELL)\s+(GBPCAD|GBP/CAD)', 'GBPCAD'),
-        (r'(BUY|SELL)\s+(EURCAD|EUR/CAD)', 'EURCAD'),
-        (r'(BUY|SELL)\s+(AUDCAD|AUD/CAD)', 'AUDCAD'),
-        (r'(BUY|SELL)\s+(AUDNZD|AUD/NZD)', 'AUDNZD'),
-        (r'(BUY|SELL)\s+(US100|NASDAQ|NAS100)', 'US100'),
-        (r'(BUY|SELL)\s+(US500|S&P500|SPX500)', 'US500'),
-        (r'(BUY|SELL)\s+(GER40|DAX|GERMANY40)', 'GER40'),
-        (r'(BUY|SELL)\s+(BTCUSD|BTC/USD|BITCOIN)', 'BTCUSD'),
-        (r'(BUY|SELL)\s+(USDJPY|USD/JPY)', 'USDJPY')
+    # Common trading pair patterns
+    pair_patterns = [
+        r'(XAUUSD|GOLD|XAU)',
+        r'(GBPJPY|GBP/JPY)',
+        r'(EURUSD|EUR/USD)',
+        r'(GBPUSD|GBP/USD)',
+        r'(AUDUSD|AUD/USD)',
+        r'(NZDUSD|NZD/USD)',
+        r'(USDCAD|USD/CAD)',
+        r'(USDCHF|USD/CHF)',
+        r'(GBPCHF|GBP/CHF)',
+        r'(CADCHF|CAD/CHF)',
+        r'(AUDCHF|AUD/CHF)',
+        r'(CHFJPY|CHF/JPY)',
+        r'(CADJPY|CAD/JPY)',
+        r'(AUDJPY|AUD/JPY)',
+        r'(GBPCAD|GBP/CAD)',
+        r'(EURCAD|EUR/CAD)',
+        r'(AUDCAD|AUD/CAD)',
+        r'(AUDNZD|AUD/NZD)',
+        r'(US100|NASDAQ|NAS100)',
+        r'(US500|S&P500|SPX500)',
+        r'(GER40|DAX|GERMANY40)',
+        r'(BTCUSD|BTC/USD|BITCOIN)',
+        r'(USDJPY|USD/JPY)'
     ]
     
-    # Try to find entry type and pair together
-    for pattern, normalized_pair in entry_pair_patterns:
-        match = re.search(pattern, message_upper)
+    # Try to find trading pair
+    for pattern in pair_patterns:
+        match = re.search(pattern, message_text.upper())
         if match:
-            entry_action = match.group(1)
-            signal_data['pair'] = normalized_pair
-            
-            # Set entry type based on action
-            if entry_action == 'BUY':
-                signal_data['entry_type'] = 'Buy execution'
-            else:  # SELL
-                signal_data['entry_type'] = 'Sell execution'
+            pair_found = match.group(1)
+            # Normalize pair names
+            if pair_found in ['GOLD', 'XAU']:
+                signal_data['pair'] = 'XAUUSD'
+            elif pair_found in ['NASDAQ', 'NAS100']:
+                signal_data['pair'] = 'US100'
+            elif pair_found in ['S&P500', 'SPX500']:
+                signal_data['pair'] = 'US500'
+            elif pair_found in ['DAX', 'GERMANY40']:
+                signal_data['pair'] = 'GER40'
+            elif pair_found in ['BTC/USD', 'BITCOIN']:
+                signal_data['pair'] = 'BTCUSD'
+            elif '/' in pair_found:
+                signal_data['pair'] = pair_found.replace('/', '')
+            else:
+                signal_data['pair'] = pair_found
+            break
+    
+    # Try to find entry type
+    entry_patterns = [
+        (r'(BUY\s*LIMIT|LONG\s*LIMIT)', 'Buy limit'),
+        (r'(SELL\s*LIMIT|SHORT\s*LIMIT)', 'Sell limit'),
+        (r'(BUY\s*STOP|LONG\s*STOP|BUY\s*EXECUTION)', 'Buy execution'),
+        (r'(SELL\s*STOP|SHORT\s*STOP|SELL\s*EXECUTION)', 'Sell execution'),
+        (r'(BUY|LONG)', 'Buy limit'),
+        (r'(SELL|SHORT)', 'Sell limit')
+    ]
+    
+    for pattern, entry_type in entry_patterns:
+        if re.search(pattern, message_text.upper()):
+            signal_data['entry_type'] = entry_type
             break
     
     # Try to find entry price
@@ -217,70 +340,17 @@ def is_valid_signal(signal_data: dict) -> bool:
     required_fields = ['pair', 'entry_type', 'entry_price']
     return all(field in signal_data for field in required_fields)
 
-def reset_daily_counters():
-    """Reset daily tracking counters if it's a new day"""
-    today = datetime.now().date()
-    
-    # Reset XAUUSD daily tracking
-    if TRACKING_CONFIG["xauusd_daily"]["last_reset"] != today:
-        TRACKING_CONFIG["xauusd_daily"]["sent_today"] = False
-        TRACKING_CONFIG["xauusd_daily"]["last_reset"] = today
-    
-    # Reset VIP and Premium signal counters
-    if TRACKING_CONFIG["vip_signals"].get("last_reset", today) != today:
-        TRACKING_CONFIG["vip_signals"]["sent_today"] = 0
-        TRACKING_CONFIG["vip_signals"]["last_reset"] = today
-    
-    if TRACKING_CONFIG["premium_signals"].get("last_reset", today) != today:
-        TRACKING_CONFIG["premium_signals"]["sent_today"] = 0
-        TRACKING_CONFIG["premium_signals"]["last_reset"] = today
-
-def determine_target_channels(pair: str) -> list:
-    """Determine which channels should receive the signal based on pair and limits"""
-    reset_daily_counters()
-    target_channels = []
-    
-    if pair == "XAUUSD":
-        # XAUUSD only goes to free, and only once per day
-        if (TRACKING_CONFIG["xauusd_daily"]["enabled"] and 
-            not TRACKING_CONFIG["xauusd_daily"]["sent_today"]):
-            target_channels = ["free", "vip", "premium"]
-            TRACKING_CONFIG["xauusd_daily"]["sent_today"] = True
-        else:
-            return []  # No channels if already sent or disabled
-    else:
-        # Other pairs go to VIP and Premium based on limits
-        vip_config = TRACKING_CONFIG["vip_signals"]
-        premium_config = TRACKING_CONFIG["premium_signals"]
-        
-        # Check VIP limit (includes VIP and Premium)
-        if (vip_config["enabled"] and 
-            vip_config["sent_today"] < vip_config["daily_limit"]):
-            target_channels.extend(["vip", "premium"])
-            vip_config["sent_today"] += 1
-        
-        # Check Premium limit (Premium only, additional signals)
-        elif (premium_config["enabled"] and 
-              premium_config["sent_today"] < premium_config["daily_limit"]):
-            target_channels.append("premium")
-            premium_config["sent_today"] += 1
-    
-    return target_channels
-
 async def forward_telegram_signal(signal_data: dict, original_message: str):
-    """Forward parsed signal to Discord using smart routing logic"""
+    """Forward parsed signal to Discord using the entry command logic"""
     try:
+        if not TELEGRAM_DEFAULT_CHANNELS:
+            print("No default channels configured for Telegram forwarding")
+            return
+        
         # Get default guild (first guild the bot is in)
         guild = bot.guilds[0] if bot.guilds else None
         if not guild:
             print("Bot not in any Discord servers")
-            return
-        
-        # Determine target channels based on pair and limits
-        target_channels = determine_target_channels(signal_data['pair'])
-        
-        if not target_channels:
-            print(f"🚫 Signal blocked: {signal_data['pair']} - daily limits reached or tracking disabled")
             return
         
         # Calculate TP and SL levels
@@ -321,39 +391,37 @@ Stop Loss: {levels['sl']}
             if role_mentions:
                 signal_message += f"\n\n{' '.join(role_mentions)}"
         
-        # Send to target channels
+        # Send to configured channels
+        channel_list = [ch.strip() for ch in TELEGRAM_DEFAULT_CHANNELS.split(',')]
         sent_channels = []
         sent_messages = []
+        channel_ids = []
         
-        for channel_type in target_channels:
-            channel_id = CHANNEL_MAPPING.get(channel_type)
-            if not channel_id:
-                print(f"⚠️ Channel mapping not found for {channel_type}")
-                continue
-                
+        for channel_identifier in channel_list:
             target_channel = None
             
             # Try to parse as channel mention
-            if channel_id.startswith('<#') and channel_id.endswith('>'):
-                channel_id = int(channel_id[2:-1])
+            if channel_identifier.startswith('<#') and channel_identifier.endswith('>'):
+                channel_id = int(channel_identifier[2:-1])
                 target_channel = bot.get_channel(channel_id)
             # Try to parse as channel ID
-            elif channel_id.isdigit():
-                target_channel = bot.get_channel(int(channel_id))
+            elif channel_identifier.isdigit():
+                target_channel = bot.get_channel(int(channel_identifier))
             # Try to find by name
             else:
-                target_channel = discord.utils.get(guild.channels, name=channel_id)
+                target_channel = discord.utils.get(guild.channels, name=channel_identifier)
             
             if target_channel and isinstance(target_channel, discord.TextChannel):
                 try:
                     sent_message = await target_channel.send(signal_message)
-                    sent_channels.append(f"{channel_type}({target_channel.name})")
+                    sent_channels.append(target_channel.name)
                     sent_messages.append(sent_message)
+                    channel_ids.append(target_channel.id)
                 except Exception as e:
                     print(f"Error sending to #{target_channel.name}: {str(e)}")
         
         if sent_messages:
-            print(f"✅ {signal_data['pair']} signal forwarded to {len(sent_channels)} channels: {', '.join(sent_channels)}")
+            print(f"✅ Telegram signal forwarded to {len(sent_channels)} channels: {', '.join(sent_channels)}")
         else:
             print("❌ No messages sent - check channel configuration")
             
@@ -434,13 +502,164 @@ def calculate_levels(entry_price: float, pair: str, entry_type: str):
         'tp2': format_price(tp2),
         'tp3': format_price(tp3),
         'sl': format_price(sl),
-        'entry': format_price(entry_price),
-        'tp1_raw': tp1,
-        'tp2_raw': tp2,
-        'tp3_raw': tp3,
-        'sl_raw': sl,
-        'entry_raw': entry_price
+        'entry': format_price(entry_price)
     }
+
+@bot.tree.command(name="timedautorole", description="Configure timed auto-role for new members")
+@app_commands.describe(
+    action="Enable/disable, check status, or list active members",
+    role="Role to assign to new members (required when enabling)",
+    duration_hours="Duration in hours to keep the role (default: 24)",
+    custom_message="Custom message to send when role expires"
+)
+async def timed_auto_role_command(
+    interaction: discord.Interaction,
+    action: str,
+    role: discord.Role | None = None,
+    duration_hours: int = 24,
+    custom_message: str | None = None
+):
+    """Configure the timed auto-role system"""
+    
+    # Check permissions
+    if not hasattr(interaction.user, 'guild_permissions') or not interaction.user.guild_permissions.manage_roles:
+        await interaction.response.send_message("❌ You need 'Manage Roles' permission to use this command.", ephemeral=True)
+        return
+    
+    try:
+        if action.lower() == "enable":
+            if not role:
+                await interaction.response.send_message("❌ You must specify a role when enabling auto-role.", ephemeral=True)
+                return
+            
+            # Check if bot has permission to manage the role
+            if interaction.guild and interaction.guild.me and role >= interaction.guild.me.top_role:
+                await interaction.response.send_message(f"❌ I cannot manage the role '{role.name}' because it's higher than my highest role.", ephemeral=True)
+                return
+            
+            # Update configuration
+            AUTO_ROLE_CONFIG["enabled"] = True
+            AUTO_ROLE_CONFIG["role_id"] = role.id
+            AUTO_ROLE_CONFIG["duration_hours"] = duration_hours
+            if custom_message:
+                AUTO_ROLE_CONFIG["custom_message"] = custom_message
+            
+            # Save configuration
+            await bot.save_auto_role_config()
+            
+            await interaction.response.send_message(
+                f"✅ **Auto-role system enabled!**\n"
+                f"• **Role:** {role.mention}\n"
+                f"• **Duration:** {duration_hours} hours\n"
+                f"• **Expiration message:** {AUTO_ROLE_CONFIG['custom_message']}\n\n"
+                f"New members will automatically receive this role for {duration_hours} hours.",
+                ephemeral=True
+            )
+            
+        elif action.lower() == "disable":
+            AUTO_ROLE_CONFIG["enabled"] = False
+            await bot.save_auto_role_config()
+            
+            await interaction.response.send_message("✅ Auto-role system disabled. No new roles will be assigned to new members.", ephemeral=True)
+            
+        elif action.lower() == "status":
+            if AUTO_ROLE_CONFIG["enabled"]:
+                role = interaction.guild.get_role(AUTO_ROLE_CONFIG["role_id"]) if interaction.guild and AUTO_ROLE_CONFIG["role_id"] else None
+                active_count = len(AUTO_ROLE_CONFIG["active_members"])
+                
+                status_message = f"✅ **Auto-role system is ENABLED**\n"
+                if role:
+                    status_message += f"• **Role:** {role.mention}\n"
+                else:
+                    status_message += f"• **Role:** Not found (ID: {AUTO_ROLE_CONFIG['role_id']})\n"
+                status_message += f"• **Duration:** {AUTO_ROLE_CONFIG['duration_hours']} hours\n"
+                status_message += f"• **Active members:** {active_count}\n"
+                status_message += f"• **Expiration message:** {AUTO_ROLE_CONFIG['custom_message']}"
+            else:
+                status_message = "❌ **Auto-role system is DISABLED**"
+            
+            await interaction.response.send_message(status_message, ephemeral=True)
+            
+        elif action.lower() == "list":
+            if not AUTO_ROLE_CONFIG["enabled"]:
+                await interaction.response.send_message("❌ Auto-role system is disabled. No active members to display.", ephemeral=True)
+                return
+            
+            if not AUTO_ROLE_CONFIG["active_members"]:
+                await interaction.response.send_message("📝 No members currently have temporary roles.", ephemeral=True)
+                return
+            
+            # Build the list of active members with time remaining
+            current_time = datetime.now()
+            member_list = []
+            
+            for member_id, data in AUTO_ROLE_CONFIG["active_members"].items():
+                try:
+                    # Get member info
+                    guild = interaction.guild
+                    if not guild:
+                        continue
+                        
+                    member = guild.get_member(int(member_id))
+                    if not member:
+                        continue
+                    
+                    # Calculate time remaining
+                    role_added_time = datetime.fromisoformat(data["role_added_time"])
+                    duration = timedelta(hours=AUTO_ROLE_CONFIG["duration_hours"])
+                    expiry_time = role_added_time + duration
+                    time_remaining = expiry_time - current_time
+                    
+                    if time_remaining.total_seconds() > 0:
+                        # Format time remaining
+                        hours = int(time_remaining.total_seconds() // 3600)
+                        minutes = int((time_remaining.total_seconds() % 3600) // 60)
+                        
+                        if hours > 0:
+                            time_str = f"{hours}h {minutes}m"
+                        else:
+                            time_str = f"{minutes}m"
+                        
+                        member_list.append(f"• {member.display_name} - {time_str} remaining")
+                    else:
+                        # Role should have expired, mark for cleanup
+                        member_list.append(f"• {member.display_name} - Expired (pending removal)")
+                        
+                except Exception as e:
+                    print(f"Error processing member {member_id}: {str(e)}")
+                    continue
+            
+            if not member_list:
+                await interaction.response.send_message("📝 No valid members found with temporary roles.", ephemeral=True)
+                return
+            
+            # Create the response message
+            role = interaction.guild.get_role(AUTO_ROLE_CONFIG["role_id"]) if interaction.guild and AUTO_ROLE_CONFIG["role_id"] else None
+            role_name = role.name if role else "Unknown Role"
+            
+            list_message = f"📋 **Active Temporary Role Members**\n"
+            list_message += f"**Role:** {role_name}\n"
+            list_message += f"**Total Duration:** {AUTO_ROLE_CONFIG['duration_hours']} hours\n\n"
+            list_message += "\n".join(member_list[:20])  # Limit to 20 members to avoid message length issues
+            
+            if len(member_list) > 20:
+                list_message += f"\n\n*...and {len(member_list) - 20} more members*"
+            
+            await interaction.response.send_message(list_message, ephemeral=True)
+            
+        else:
+            await interaction.response.send_message("❌ Invalid action. Use 'enable', 'disable', 'status', or 'list'.", ephemeral=True)
+            
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Error configuring auto-role: {str(e)}", ephemeral=True)
+
+@timed_auto_role_command.autocomplete('action')
+async def action_autocomplete(interaction: discord.Interaction, current: str):
+    actions = ['enable', 'disable', 'status', 'list']
+    return [
+        app_commands.Choice(name=action, value=action)
+        for action in actions if current.lower() in action.lower()
+    ]
 
 @bot.tree.command(name="entry", description="Create a trading signal entry")
 @app_commands.describe(
@@ -490,7 +709,7 @@ Stop Loss: {levels['sl']}"""
                     role_mentions.append("@everyone")
                 else:
                     # Find role by name in the guild
-                    role = discord.utils.get(interaction.guild.roles, name=role_name)
+                    role = discord.utils.get(interaction.guild.roles, name=role_name) if interaction.guild else None
                     if role:
                         role_mentions.append(role.mention)
                     else:
@@ -499,40 +718,35 @@ Stop Loss: {levels['sl']}"""
             if role_mentions:
                 signal_message += f"\n\n{' '.join(role_mentions)}"
         
-        # Parse and send to multiple channels - using channel IDs to avoid name conflicts
+        # Parse and send to multiple channels
         channel_list = [ch.strip() for ch in channels.split(',')]
         sent_channels = []
-        sent_messages = []
-        channel_ids = []
         
         for channel_identifier in channel_list:
             target_channel = None
             
-            # Priority 1: Try to parse as channel mention (most reliable)
+            # Try to parse as channel mention
             if channel_identifier.startswith('<#') and channel_identifier.endswith('>'):
                 channel_id = int(channel_identifier[2:-1])
                 target_channel = bot.get_channel(channel_id)
-            # Priority 2: Try to parse as channel ID
+            # Try to parse as channel ID
             elif channel_identifier.isdigit():
                 target_channel = bot.get_channel(int(channel_identifier))
-            # Priority 3: Find by name (will get first match - this is the issue you mentioned)
+            # Try to find by name
             else:
-                target_channel = discord.utils.get(interaction.guild.channels, name=channel_identifier)
+                target_channel = discord.utils.get(interaction.guild.channels, name=channel_identifier) if interaction.guild else None
             
             if target_channel and isinstance(target_channel, discord.TextChannel):
                 try:
-                    sent_message = await target_channel.send(signal_message)
+                    await target_channel.send(signal_message)
                     sent_channels.append(target_channel.name)
-                    sent_messages.append(sent_message)
-                    channel_ids.append(target_channel.id)
                 except discord.Forbidden:
                     await interaction.followup.send(f"❌ No permission to send to #{target_channel.name}", ephemeral=True)
                 except Exception as e:
                     await interaction.followup.send(f"❌ Error sending to #{target_channel.name}: {str(e)}", ephemeral=True)
         
         if sent_channels:
-            success_msg = f"✅ Signal sent to: {', '.join(sent_channels)}"
-            await interaction.response.send_message(success_msg, ephemeral=True)
+            await interaction.response.send_message(f"✅ Signal sent to: {', '.join(sent_channels)}", ephemeral=True)
         else:
             await interaction.response.send_message("❌ No valid channels found or no messages sent.", ephemeral=True)
             
@@ -627,7 +841,7 @@ async def stats_command(
 • TP3 Hits: **{tp3_hits}**
 
 **:octagonal_sign: STOP LOSS**
-• SL Hits: **{sl_hits}**
+• SL Hits: **{sl_hits}** ({sl_percent})
 
 **:bar_chart: PERFORMANCE SUMMARY**
 • **Win Rate:** {tp1_percent}
@@ -649,7 +863,7 @@ async def stats_command(
                 target_channel = bot.get_channel(int(channel_identifier))
             # Try to find by name
             else:
-                target_channel = discord.utils.get(interaction.guild.channels, name=channel_identifier)
+                target_channel = discord.utils.get(interaction.guild.channels, name=channel_identifier) if interaction.guild else None
             
             if target_channel and isinstance(target_channel, discord.TextChannel):
                 try:
@@ -668,8 +882,6 @@ async def stats_command(
     except Exception as e:
         await interaction.response.send_message(f"❌ Error sending statistics: {str(e)}", ephemeral=True)
 
-
-
 @bot.tree.command(name="telegram", description="Check Telegram integration status")
 async def telegram_command(interaction: discord.Interaction):
     """Check Telegram integration status and configuration"""
@@ -677,11 +889,11 @@ async def telegram_command(interaction: discord.Interaction):
         status_msg = f"**📱 Telegram Integration Status**\n\n"
         
         # Check if Telegram is available
-        if TELEGRAM_AVAILABLE:
-            status_msg += "✅ Telegram integration installed\n\n"
-        else:
+        if not TELEGRAM_AVAILABLE:
             status_msg += "❌ Telegram integration not installed\n"
             status_msg += "💡 Install with: pip install pyrogram tgcrypto\n\n"
+        else:
+            status_msg += "✅ Telegram integration installed\n\n"
         
         # Check configuration
         config_status = []
@@ -718,7 +930,7 @@ async def telegram_command(interaction: discord.Interaction):
         status_msg += "\n".join(config_status)
         
         # Overall status
-        if TELEGRAM_AVAILABLE and TELEGRAM_API_ID and TELEGRAM_API_HASH and TELEGRAM_PHONE_NUMBER:
+        if telegram_client and TELEGRAM_API_ID and TELEGRAM_API_HASH:
             status_msg += "\n\n🎯 Status: Ready for signal forwarding"
         else:
             status_msg += "\n\n❌ Status: Not configured"
@@ -728,130 +940,6 @@ async def telegram_command(interaction: discord.Interaction):
         
     except Exception as e:
         await interaction.response.send_message(f"❌ Error checking Telegram status: {str(e)}", ephemeral=True)
-
-@bot.tree.command(name="tracking", description="Manage signal tracking settings")
-@app_commands.describe(
-    action="Action to perform",
-    target="What to control (xauusd, vip, premium, all)",
-    channel_type="Channel type for sleep mode (free, vip, premium, all)"
-)
-async def tracking_command(
-    interaction: discord.Interaction,
-    action: str,
-    target: str = "all",
-    channel_type: str = "all"
-):
-    """Manage signal tracking settings - sleep mode, resume, and status"""
-    
-    try:
-        if action == "sleep":
-            # Put tracking into sleep mode
-            if target == "xauusd":
-                if channel_type == "all":
-                    TRACKING_CONFIG["xauusd_daily"]["enabled"] = False
-                    await interaction.response.send_message("🛌 XAUUSD tracking disabled for all channels (free, vip, premium) until manually resumed.", ephemeral=True)
-                else:
-                    await interaction.response.send_message("⚠️ XAUUSD tracking affects all channels. Use target='xauusd' and channel_type='all'.", ephemeral=True)
-            elif target == "vip":
-                TRACKING_CONFIG["vip_signals"]["enabled"] = False
-                await interaction.response.send_message("🛌 VIP signals tracking disabled (affects vip and premium channels) until manually resumed.", ephemeral=True)
-            elif target == "premium":
-                TRACKING_CONFIG["premium_signals"]["enabled"] = False
-                await interaction.response.send_message("🛌 Premium signals tracking disabled until manually resumed.", ephemeral=True)
-            elif target == "all":
-                TRACKING_CONFIG["xauusd_daily"]["enabled"] = False
-                TRACKING_CONFIG["vip_signals"]["enabled"] = False
-                TRACKING_CONFIG["premium_signals"]["enabled"] = False
-                await interaction.response.send_message("🛌 All signal tracking disabled until manually resumed.", ephemeral=True)
-            else:
-                await interaction.response.send_message("❌ Invalid target. Use: xauusd, vip, premium, or all", ephemeral=True)
-        
-        elif action == "resume":
-            # Resume tracking
-            if target == "xauusd":
-                TRACKING_CONFIG["xauusd_daily"]["enabled"] = True
-                await interaction.response.send_message("✅ XAUUSD tracking resumed for all channels.", ephemeral=True)
-            elif target == "vip":
-                TRACKING_CONFIG["vip_signals"]["enabled"] = True
-                await interaction.response.send_message("✅ VIP signals tracking resumed.", ephemeral=True)
-            elif target == "premium":
-                TRACKING_CONFIG["premium_signals"]["enabled"] = True
-                await interaction.response.send_message("✅ Premium signals tracking resumed.", ephemeral=True)
-            elif target == "all":
-                TRACKING_CONFIG["xauusd_daily"]["enabled"] = True
-                TRACKING_CONFIG["vip_signals"]["enabled"] = True
-                TRACKING_CONFIG["premium_signals"]["enabled"] = True
-                await interaction.response.send_message("✅ All signal tracking resumed.", ephemeral=True)
-            else:
-                await interaction.response.send_message("❌ Invalid target. Use: xauusd, vip, premium, or all", ephemeral=True)
-        
-        elif action == "status":
-            # Show current tracking status
-            reset_daily_counters()  # Ensure counters are up to date
-            
-            status_msg = "**🎯 Signal Tracking Status**\n\n"
-            
-            # XAUUSD Status
-            xauusd_config = TRACKING_CONFIG["xauusd_daily"]
-            xauusd_status = "✅ Active" if xauusd_config["enabled"] else "🛌 Sleeping"
-            xauusd_sent = "✅ Sent today" if xauusd_config["sent_today"] else "⏳ Not sent yet"
-            status_msg += f"**XAUUSD Daily Signal (Free, VIP, Premium):**\n"
-            status_msg += f"• Status: {xauusd_status}\n"
-            status_msg += f"• Today: {xauusd_sent}\n\n"
-            
-            # VIP Status
-            vip_config = TRACKING_CONFIG["vip_signals"]
-            vip_status = "✅ Active" if vip_config["enabled"] else "🛌 Sleeping"
-            vip_count = f"{vip_config['sent_today']}/{vip_config['daily_limit']}"
-            status_msg += f"**VIP Signals (VIP, Premium channels):**\n"
-            status_msg += f"• Status: {vip_status}\n"
-            status_msg += f"• Today: {vip_count} signals\n\n"
-            
-            # Premium Status
-            premium_config = TRACKING_CONFIG["premium_signals"]
-            premium_status = "✅ Active" if premium_config["enabled"] else "🛌 Sleeping"
-            premium_count = f"{premium_config['sent_today']}/{premium_config['daily_limit']}"
-            status_msg += f"**Premium Signals (Premium channel only):**\n"
-            status_msg += f"• Status: {premium_status}\n"
-            status_msg += f"• Today: {premium_count} signals\n\n"
-            
-            # Channel mapping info
-            status_msg += "**📋 Channel Configuration:**\n"
-            status_msg += f"• Free: {CHANNEL_MAPPING.get('free', 'Not configured')}\n"
-            status_msg += f"• VIP: {CHANNEL_MAPPING.get('vip', 'Not configured')}\n"
-            status_msg += f"• Premium: {CHANNEL_MAPPING.get('premium', 'Not configured')}\n"
-            
-            await interaction.response.send_message(status_msg, ephemeral=True)
-        
-        else:
-            await interaction.response.send_message("❌ Invalid action. Use: sleep, resume, or status", ephemeral=True)
-            
-    except Exception as e:
-        await interaction.response.send_message(f"❌ Error managing tracking: {str(e)}", ephemeral=True)
-
-@tracking_command.autocomplete('action')
-async def tracking_action_autocomplete(interaction: discord.Interaction, current: str):
-    actions = ['sleep', 'resume', 'status']
-    return [
-        app_commands.Choice(name=action, value=action)
-        for action in actions if current.lower() in action.lower()
-    ]
-
-@tracking_command.autocomplete('target')
-async def tracking_target_autocomplete(interaction: discord.Interaction, current: str):
-    targets = ['xauusd', 'vip', 'premium', 'all']
-    return [
-        app_commands.Choice(name=target, value=target)
-        for target in targets if current.lower() in target.lower()
-    ]
-
-@tracking_command.autocomplete('channel_type')
-async def tracking_channel_type_autocomplete(interaction: discord.Interaction, current: str):
-    channel_types = ['free', 'vip', 'premium', 'all']
-    return [
-        app_commands.Choice(name=channel_type, value=channel_type)
-        for channel_type in channel_types if current.lower() in channel_type.lower()
-    ]
 
 # Error handling
 @bot.event
@@ -880,7 +968,6 @@ async def start_web_server():
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
     print(f"Web server started on port {port}")
-    return site
 
 async def start_bot():
     """Start the Discord bot"""
@@ -935,5 +1022,9 @@ async def main():
     # Wait for all tasks to complete
     await asyncio.gather(*tasks)
 
+# Run the bot
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("Bot stopped.")
