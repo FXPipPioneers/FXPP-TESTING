@@ -1033,10 +1033,12 @@ async def telegram_command(interaction: discord.Interaction):
             try:
                 if telegram_client.is_connected:
                     auth_status.append("✅ Client connected")
-                    if hasattr(telegram_client, 'is_user_authorized'):
-                        # This might fail if not connected, so we'll handle it gracefully
-                        auth_status.append("✅ User authorized")
-                    else:
+                    try:
+                        if await telegram_client.is_user_authorized():
+                            auth_status.append("✅ User authorized")
+                        else:
+                            auth_status.append("❌ User not authorized")
+                    except:
                         auth_status.append("⚠️ Authorization status unknown")
                 else:
                     auth_status.append("❌ Client not connected")
@@ -1048,7 +1050,7 @@ async def telegram_command(interaction: discord.Interaction):
         if telegram_auth_pending:
             auth_status.append("🔄 Authentication pending - use /telegram_auth")
         
-        status_msg += "\n**Authentication Status:**\n"
+        status_msg += "\n\n**Authentication Status:**\n"
         status_msg += "\n".join(f"• {status}" for status in auth_status)
         
         # Overall status
@@ -1056,6 +1058,9 @@ async def telegram_command(interaction: discord.Interaction):
             if telegram_auth_pending:
                 status_msg += "\n\n🔄 Status: Authentication required"
                 status_msg += "\n💡 Use /telegram_auth command to enter verification code"
+            elif not telegram_client.is_connected:
+                status_msg += "\n\n❌ Status: Client not connected"
+                status_msg += "\n💡 Use /telegram_restart command to reconnect and get verification code"
             else:
                 status_msg += "\n\n🎯 Status: Ready for signal forwarding"
         else:
@@ -1218,6 +1223,10 @@ async def telegram_restart_command(interaction: discord.Interaction):
                 await telegram_client.disconnect()
                 log_telegram_activity("client_disconnected", "Telegram client disconnected for restart")
             
+            # Connect to Telegram
+            await telegram_client.connect()
+            log_telegram_activity("client_reconnected", "Telegram client reconnected")
+            
             # Send verification code
             sent_code = await telegram_client.send_code(TELEGRAM_PHONE_NUMBER)
             telegram_auth_pending = True
@@ -1227,8 +1236,8 @@ async def telegram_restart_command(interaction: discord.Interaction):
             
             await interaction.followup.send(
                 "✅ **Telegram Authentication Restarted**\n\n"
-                "A new verification code has been sent to your Telegram app.\n"
-                "Use `/telegram_auth <code>` to enter the verification code.",
+                f"A new verification code has been sent to **{TELEGRAM_PHONE_NUMBER}**.\n"
+                "Check your Telegram app and use `/telegram_auth <code>` to enter the verification code.",
                 ephemeral=True
             )
             
