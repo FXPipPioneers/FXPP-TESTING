@@ -1074,73 +1074,142 @@ async def telegram_command(interaction: discord.Interaction):
 
 @bot.tree.command(name="tracking", description="Monitor Telegram signal tracking and forwarding activity")
 async def tracking_command(interaction: discord.Interaction):
-    """Display detailed tracking information for Telegram signal forwarding"""
+    """Display essential tracking information for Telegram signal forwarding"""
     try:
-        # Build comprehensive tracking report
-        report = f"**📊 TELEGRAM SIGNAL TRACKING REPORT**\n\n"
+        # Build focused tracking report with only essential information
+        report = f"**📊 TELEGRAM TRACKING STATUS**\n\n"
         
-        # Overall Statistics
-        report += f"**📈 OVERALL STATISTICS**\n"
-        report += f"• Messages Received: **{SIGNAL_TRACKING['total_received']}**\n"
-        report += f"• Signals Parsed: **{SIGNAL_TRACKING['total_parsed']}**\n"
-        report += f"• Signals Forwarded: **{SIGNAL_TRACKING['total_forwarded']}**\n"
-        report += f"• Last Activity: **{SIGNAL_TRACKING['last_activity'] or 'None'}**\n\n"
+        # Connection Status (Most Important)
+        if telegram_client:
+            try:
+                if telegram_client.is_connected and await telegram_client.is_user_authorized():
+                    report += f"🟢 **ACTIVE** - Monitoring {TELEGRAM_SOURCE_CHAT_ID or 'all chats'}\n"
+                elif telegram_client.is_connected:
+                    report += f"🟡 **CONNECTED** - Not authorized (use /telegram_auth)\n"
+                else:
+                    report += f"🔴 **OFFLINE** - Not connected (use /telegram_restart)\n"
+            except:
+                report += f"🔴 **ERROR** - Connection failed\n"
+        else:
+            report += f"⚫ **DISABLED** - Not configured\n"
         
-        # Success Rate
+        report += f"\n"
+        
+        # Activity Summary (Essential Metrics Only)
         if SIGNAL_TRACKING['total_received'] > 0:
-            parse_rate = (SIGNAL_TRACKING['total_parsed'] / SIGNAL_TRACKING['total_received']) * 100
-            forward_rate = (SIGNAL_TRACKING['total_forwarded'] / SIGNAL_TRACKING['total_parsed']) * 100 if SIGNAL_TRACKING['total_parsed'] > 0 else 0
-            report += f"**📊 SUCCESS RATES**\n"
-            report += f"• Parse Rate: **{parse_rate:.1f}%**\n"
-            report += f"• Forward Rate: **{forward_rate:.1f}%**\n\n"
+            success_rate = (SIGNAL_TRACKING['total_forwarded'] / SIGNAL_TRACKING['total_received']) * 100
+            report += f"**📈 ACTIVITY SUMMARY**\n"
+            report += f"• **{SIGNAL_TRACKING['total_received']}** messages received\n"
+            report += f"• **{SIGNAL_TRACKING['total_forwarded']}** signals forwarded (**{success_rate:.0f}%** success)\n"
+            report += f"• Last activity: **{SIGNAL_TRACKING['last_activity'] or 'Never'}**\n\n"
+        else:
+            report += f"**📈 ACTIVITY SUMMARY**\n• No messages received yet\n\n"
         
-        # Recent Signals
+        # Recent Signals (Most Recent 3)
         if SIGNAL_TRACKING['recent_signals']:
-            report += f"**🎯 RECENT SIGNALS ({len(SIGNAL_TRACKING['recent_signals'])})**\n"
-            for signal in SIGNAL_TRACKING['recent_signals'][-5:]:  # Show last 5
-                report += f"• **{signal['timestamp']}** - {signal['pair']} ({signal['entry_type']}) → {len(signal['channels'])} channels\n"
-            report += "\n"
+            report += f"**🎯 RECENT SIGNALS**\n"
+            for signal in SIGNAL_TRACKING['recent_signals'][-3:]:
+                timestamp = signal['timestamp'].split(' ')[1]  # Show only time
+                report += f"• **{timestamp}** {signal['pair']} {signal['entry_type']} → {len(signal['channels'])} channels\n"
         else:
-            report += f"**🎯 RECENT SIGNALS**\n• No signals processed yet\n\n"
+            report += f"**🎯 RECENT SIGNALS**\n• No signals forwarded yet\n"
         
-        # Recent Errors
+        # Current Issues (Only if there are problems)
         if SIGNAL_TRACKING['errors']:
-            report += f"**⚠️ RECENT ERRORS ({len(SIGNAL_TRACKING['errors'])})**\n"
-            for error in SIGNAL_TRACKING['errors'][-3:]:  # Show last 3
-                report += f"• **{error['timestamp']}** - {error['message'][:100]}\n"
-            report += "\n"
+            latest_error = SIGNAL_TRACKING['errors'][-1]
+            report += f"\n**⚠️ LATEST ISSUE**\n"
+            report += f"• **{latest_error['timestamp'].split(' ')[1]}** {latest_error['message'][:60]}...\n"
         
-        # Configuration Status
-        report += f"**⚙️ CONFIGURATION STATUS**\n"
-        report += f"• Telegram Client: **{'✅ Active' if telegram_client else '❌ Not configured'}**\n"
-        report += f"• Source Chat ID: **{TELEGRAM_SOURCE_CHAT_ID or 'Not set (monitoring all)'}**\n"
-        report += f"• Default Channels: **{len(TELEGRAM_DEFAULT_CHANNELS.split(',')) if TELEGRAM_DEFAULT_CHANNELS else 0} configured**\n"
-        report += f"• Default Roles: **{TELEGRAM_DEFAULT_ROLES or 'None'}**\n\n"
+        # Quick Debug Info (Only if needed)
+        if SIGNAL_TRACKING['total_received'] > 0 and SIGNAL_TRACKING['total_forwarded'] == 0:
+            report += f"\n**🔧 DEBUG INFO**\n"
+            if not TELEGRAM_DEFAULT_CHANNELS:
+                report += f"• ❌ No default Discord channels configured\n"
+            else:
+                channel_count = len(TELEGRAM_DEFAULT_CHANNELS.split(','))
+                report += f"• ✅ {channel_count} Discord channels configured\n"
+                
+            # Show recent failed parsing attempts
+            failed_attempts = [log for log in TELEGRAM_LOGS[-5:] if log['type'] == 'signal_invalid']
+            if failed_attempts:
+                report += f"• ⚠️ {len(failed_attempts)} recent parsing failures\n"
         
-        # Recent Activity Logs (last 10)
-        if TELEGRAM_LOGS:
-            report += f"**📝 RECENT ACTIVITY LOG ({len(TELEGRAM_LOGS)})**\n"
-            for log in TELEGRAM_LOGS[-10:]:
-                report += f"• **{log['timestamp']}** [{log['type'].upper()}] {log['message'][:80]}\n"
-        else:
-            report += f"**📝 RECENT ACTIVITY LOG**\n• No activity logged yet\n"
-        
-        # Split message if too long
-        if len(report) > 2000:
-            # Send first part
-            first_part = report[:1900] + "\n\n*[Continued in next message...]*"
-            await interaction.response.send_message(first_part, ephemeral=True)
-            
-            # Send second part
-            second_part = "*[...Continued from previous message]*\n\n" + report[1900:]
-            if len(second_part) > 2000:
-                second_part = second_part[:1950] + "\n\n*[Message truncated due to length limit]*"
-            await interaction.followup.send(second_part, ephemeral=True)
-        else:
-            await interaction.response.send_message(report, ephemeral=True)
+        await interaction.response.send_message(report, ephemeral=True)
             
     except Exception as e:
         await interaction.response.send_message(f"❌ Error generating tracking report: {str(e)}", ephemeral=True)
+
+@bot.tree.command(name="debug_telegram", description="Debug Telegram message parsing and forwarding")
+@app_commands.describe(
+    test_message="Test message to parse (optional)"
+)
+async def debug_telegram_command(interaction: discord.Interaction, test_message: str = None):
+    """Debug Telegram parsing and forwarding functionality"""
+    try:
+        await interaction.response.defer(ephemeral=True)
+        
+        debug_report = "**🔧 TELEGRAM DEBUG REPORT**\n\n"
+        
+        # Test message parsing if provided
+        if test_message:
+            debug_report += f"**📝 PARSING TEST**\n"
+            debug_report += f"Input: `{test_message[:100]}`\n"
+            
+            parsed_data = parse_telegram_signal(test_message)
+            debug_report += f"Parsed: `{parsed_data}`\n"
+            
+            is_valid = is_valid_signal(parsed_data)
+            debug_report += f"Valid: **{'✅ Yes' if is_valid else '❌ No'}**\n\n"
+            
+            if is_valid:
+                debug_report += f"**🎯 WOULD FORWARD TO:**\n"
+                if TELEGRAM_DEFAULT_CHANNELS:
+                    channels = TELEGRAM_DEFAULT_CHANNELS.split(',')
+                    for ch_id in channels:
+                        try:
+                            channel = bot.get_channel(int(ch_id.strip()))
+                            debug_report += f"• {channel.name if channel else f'Channel {ch_id} (Not Found)'}\n"
+                        except:
+                            debug_report += f"• Invalid Channel ID: {ch_id}\n"
+                else:
+                    debug_report += f"• ❌ No channels configured\n"
+        
+        # Configuration check
+        debug_report += f"\n**⚙️ CONFIGURATION**\n"
+        debug_report += f"• Source Chat: **{TELEGRAM_SOURCE_CHAT_ID or 'Not set (all chats)'}**\n"
+        debug_report += f"• Default Channels: **{TELEGRAM_DEFAULT_CHANNELS or 'None'}**\n"
+        debug_report += f"• Default Roles: **{TELEGRAM_DEFAULT_ROLES or 'None'}**\n"
+        
+        # Connection status
+        debug_report += f"\n**🔌 CONNECTION STATUS**\n"
+        if telegram_client:
+            try:
+                connected = telegram_client.is_connected
+                authorized = await telegram_client.is_user_authorized() if connected else False
+                debug_report += f"• Connected: **{'✅ Yes' if connected else '❌ No'}**\n"
+                debug_report += f"• Authorized: **{'✅ Yes' if authorized else '❌ No'}**\n"
+                
+                if connected and authorized:
+                    me = await telegram_client.get_me()
+                    debug_report += f"• User: **{me.first_name} (@{me.username})**\n"
+            except Exception as e:
+                debug_report += f"• Error: **{str(e)}**\n"
+        else:
+            debug_report += f"• Client: **❌ Not configured**\n"
+        
+        # Recent activity preview
+        debug_report += f"\n**📋 RECENT ACTIVITY**\n"
+        if TELEGRAM_LOGS:
+            for log in TELEGRAM_LOGS[-3:]:
+                time_only = log['timestamp'].split(' ')[1]
+                debug_report += f"• **{time_only}** [{log['type']}] {log['message'][:50]}...\n"
+        else:
+            debug_report += f"• No activity logged\n"
+        
+        await interaction.followup.send(debug_report, ephemeral=True)
+        
+    except Exception as e:
+        await interaction.followup.send(f"❌ Debug error: {str(e)}", ephemeral=True)
 
 @bot.tree.command(name="telegram_auth", description="Enter Telegram 2FA verification code")
 @app_commands.describe(
