@@ -211,6 +211,9 @@ bot = TradingBot()
 
 # Initialize Telegram client if available
 telegram_client = None
+telegram_auth_pending = False
+telegram_auth_phone_code_hash = None
+
 if TELEGRAM_AVAILABLE and TELEGRAM_API_ID and TELEGRAM_API_HASH:
     telegram_client = Client(
         "trading_bot_session",
@@ -1024,9 +1027,37 @@ async def telegram_command(interaction: discord.Interaction):
         
         status_msg += "\n".join(config_status)
         
+        # Authentication status
+        auth_status = []
+        if telegram_client:
+            try:
+                if telegram_client.is_connected:
+                    auth_status.append("✅ Client connected")
+                    if hasattr(telegram_client, 'is_user_authorized'):
+                        # This might fail if not connected, so we'll handle it gracefully
+                        auth_status.append("✅ User authorized")
+                    else:
+                        auth_status.append("⚠️ Authorization status unknown")
+                else:
+                    auth_status.append("❌ Client not connected")
+            except:
+                auth_status.append("⚠️ Connection status unknown")
+        else:
+            auth_status.append("❌ Client not initialized")
+        
+        if telegram_auth_pending:
+            auth_status.append("🔄 Authentication pending - use /telegram_auth")
+        
+        status_msg += "\n**Authentication Status:**\n"
+        status_msg += "\n".join(f"• {status}" for status in auth_status)
+        
         # Overall status
         if telegram_client and TELEGRAM_API_ID and TELEGRAM_API_HASH:
-            status_msg += "\n\n🎯 Status: Ready for signal forwarding"
+            if telegram_auth_pending:
+                status_msg += "\n\n🔄 Status: Authentication required"
+                status_msg += "\n💡 Use /telegram_auth command to enter verification code"
+            else:
+                status_msg += "\n\n🎯 Status: Ready for signal forwarding"
         else:
             status_msg += "\n\n❌ Status: Not configured"
             status_msg += "\n💡 Configure environment variables to enable"
@@ -1106,6 +1137,109 @@ async def tracking_command(interaction: discord.Interaction):
     except Exception as e:
         await interaction.response.send_message(f"❌ Error generating tracking report: {str(e)}", ephemeral=True)
 
+@bot.tree.command(name="telegram_auth", description="Enter Telegram 2FA verification code")
+@app_commands.describe(
+    verification_code="The verification code sent to your Telegram app"
+)
+async def telegram_auth_command(interaction: discord.Interaction, verification_code: str):
+    """Handle Telegram 2FA verification code input"""
+    try:
+        global telegram_auth_pending, telegram_auth_phone_code_hash
+        
+        if not telegram_client:
+            await interaction.response.send_message("❌ Telegram client not configured. Check environment variables first.", ephemeral=True)
+            return
+        
+        if not telegram_auth_pending:
+            await interaction.response.send_message("❌ No authentication pending. The bot may already be authenticated or needs to be restarted.", ephemeral=True)
+            return
+        
+        await interaction.response.defer(ephemeral=True)
+        
+        try:
+            # Sign in with the verification code
+            if telegram_auth_phone_code_hash:
+                await telegram_client.sign_in(TELEGRAM_PHONE_NUMBER, telegram_auth_phone_code_hash, verification_code.strip())
+            else:
+                # Try direct sign in if no phone code hash stored
+                await telegram_client.sign_in(TELEGRAM_PHONE_NUMBER, verification_code.strip())
+            
+            telegram_auth_pending = False
+            telegram_auth_phone_code_hash = None
+            
+            log_telegram_activity("auth_success", "Successfully authenticated with Telegram")
+            
+            await interaction.followup.send("✅ **Telegram Authentication Successful!**\n\nThe bot is now authenticated and ready to monitor signals.", ephemeral=True)
+            
+            # Try to get some basic info to confirm connection
+            try:
+                me = await telegram_client.get_me()
+                log_telegram_activity("connection_verified", f"Connected as: {me.first_name} (@{me.username})")
+                print(f"✅ Telegram authenticated as: {me.first_name} (@{me.username})")
+            except Exception as info_error:
+                print(f"⚠️ Authentication successful but couldn't get user info: {info_error}")
+                
+        except Exception as auth_error:
+            error_msg = str(auth_error)
+            log_telegram_activity("auth_error", f"Authentication failed: {error_msg}")
+            
+            if "PHONE_CODE_INVALID" in error_msg:
+                await interaction.followup.send("❌ **Invalid verification code**\n\nPlease check the code and try again with `/telegram_auth` command.", ephemeral=True)
+            elif "PHONE_CODE_EXPIRED" in error_msg:
+                await interaction.followup.send("❌ **Verification code expired**\n\nPlease restart the bot to get a new code.", ephemeral=True)
+                telegram_auth_pending = False
+                telegram_auth_phone_code_hash = None
+            else:
+                await interaction.followup.send(f"❌ **Authentication Error**\n\n{error_msg}\n\nTry restarting the bot if the problem persists.", ephemeral=True)
+            
+    except Exception as e:
+        log_telegram_activity("auth_command_error", f"Error in auth command: {str(e)}")
+        await interaction.followup.send(f"❌ Error processing authentication: {str(e)}", ephemeral=True)
+
+@bot.tree.command(name="telegram_restart", description="Restart Telegram client authentication process")
+async def telegram_restart_command(interaction: discord.Interaction):
+    """Restart the Telegram authentication process"""
+    try:
+        global telegram_auth_pending, telegram_auth_phone_code_hash
+        
+        if not telegram_client:
+            await interaction.response.send_message("❌ Telegram client not configured. Check environment variables first.", ephemeral=True)
+            return
+        
+        await interaction.response.defer(ephemeral=True)
+        
+        try:
+            # Reset auth state
+            telegram_auth_pending = False
+            telegram_auth_phone_code_hash = None
+            
+            # Try to disconnect and reconnect
+            if telegram_client.is_connected:
+                await telegram_client.disconnect()
+                log_telegram_activity("client_disconnected", "Telegram client disconnected for restart")
+            
+            # Send verification code
+            sent_code = await telegram_client.send_code(TELEGRAM_PHONE_NUMBER)
+            telegram_auth_pending = True
+            telegram_auth_phone_code_hash = sent_code.phone_code_hash
+            
+            log_telegram_activity("auth_restarted", "Authentication process restarted, verification code sent")
+            
+            await interaction.followup.send(
+                "✅ **Telegram Authentication Restarted**\n\n"
+                "A new verification code has been sent to your Telegram app.\n"
+                "Use `/telegram_auth <code>` to enter the verification code.",
+                ephemeral=True
+            )
+            
+        except Exception as restart_error:
+            error_msg = str(restart_error)
+            log_telegram_activity("restart_error", f"Failed to restart auth: {error_msg}")
+            await interaction.followup.send(f"❌ **Restart Failed**\n\n{error_msg}", ephemeral=True)
+            
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error restarting Telegram auth: {str(e)}", ephemeral=True)
+
 # Error handling
 @bot.event
 async def on_command_error(ctx, error):
@@ -1143,31 +1277,73 @@ async def start_bot():
     await bot.start(DISCORD_TOKEN)
 
 async def start_telegram_client():
-    """Start the Telegram client"""
+    """Start the Telegram client with enhanced authentication handling"""
+    global telegram_auth_pending, telegram_auth_phone_code_hash
+    
     if not telegram_client:
         print("Telegram client not configured")
         return
     
     try:
-        await telegram_client.start()
-        print("✅ Telegram client started successfully")
+        # Check if already authorized
+        await telegram_client.connect()
         
-        # Print configuration status
-        if TELEGRAM_SOURCE_CHAT_ID:
-            print(f"📱 Monitoring Telegram chat: {TELEGRAM_SOURCE_CHAT_ID}")
-        else:
-            print("⚠️ No specific chat ID configured - monitoring all chats")
+        if not await telegram_client.is_user_authorized():
+            print("📱 Telegram client not authorized, sending verification code...")
+            log_telegram_activity("auth_required", "Telegram client needs authentication")
             
-        if TELEGRAM_DEFAULT_CHANNELS:
-            print(f"🎯 Default Discord channels: {TELEGRAM_DEFAULT_CHANNELS}")
-        else:
-            print("⚠️ No default Discord channels configured")
+            # Send verification code
+            sent_code = await telegram_client.send_code(TELEGRAM_PHONE_NUMBER)
+            telegram_auth_pending = True
+            telegram_auth_phone_code_hash = sent_code.phone_code_hash
             
-        # Keep running
-        await telegram_client.idle()
+            print(f"📱 Verification code sent to {TELEGRAM_PHONE_NUMBER}")
+            print("⚠️ Use /telegram_auth command in Discord to enter the verification code")
+            log_telegram_activity("verification_sent", f"Verification code sent to {TELEGRAM_PHONE_NUMBER}")
+            
+            # Wait for authentication (check every 30 seconds for up to 10 minutes)
+            for i in range(20):
+                await asyncio.sleep(30)
+                if not telegram_auth_pending and await telegram_client.is_user_authorized():
+                    break
+                if i % 4 == 0:  # Every 2 minutes
+                    print(f"⏳ Still waiting for Telegram verification code... ({i//4 + 1}/5)")
+            
+        if await telegram_client.is_user_authorized():
+            print("✅ Telegram client authenticated successfully")
+            log_telegram_activity("client_started", "Telegram client started and authenticated")
+            
+            # Get user info
+            try:
+                me = await telegram_client.get_me()
+                print(f"👤 Connected as: {me.first_name} (@{me.username})")
+                log_telegram_activity("user_info", f"Connected as: {me.first_name} (@{me.username})")
+            except Exception as info_error:
+                print(f"⚠️ Couldn't get user info: {info_error}")
+            
+            # Print configuration status
+            if TELEGRAM_SOURCE_CHAT_ID:
+                print(f"📱 Monitoring Telegram chat: {TELEGRAM_SOURCE_CHAT_ID}")
+                log_telegram_activity("monitoring_configured", f"Monitoring chat ID: {TELEGRAM_SOURCE_CHAT_ID}")
+            else:
+                print("⚠️ No specific chat ID configured - monitoring all chats")
+                log_telegram_activity("monitoring_all", "Monitoring all accessible chats")
+                
+            if TELEGRAM_DEFAULT_CHANNELS:
+                print(f"🎯 Default Discord channels: {TELEGRAM_DEFAULT_CHANNELS}")
+            else:
+                print("⚠️ No default Discord channels configured")
+                
+            # Keep running
+            await telegram_client.idle()
+        else:
+            print("❌ Telegram client authentication failed or timed out")
+            log_telegram_activity("auth_timeout", "Authentication timed out or failed")
         
     except Exception as e:
-        print(f"❌ Error starting Telegram client: {str(e)}")
+        error_msg = f"Error starting Telegram client: {str(e)}"
+        print(f"❌ {error_msg}")
+        log_telegram_activity("startup_error", error_msg)
 
 async def main():
     """Main function to run web server, Discord bot, and Telegram client"""
