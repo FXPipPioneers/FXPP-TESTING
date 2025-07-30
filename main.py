@@ -248,6 +248,48 @@ PAIR_CONFIG = {
     'AUDNZD': {'decimals': 4, 'pip_value': 0.0001}   # Same as GBPUSD
 }
 
+# Telegram monitoring and logging
+TELEGRAM_LOGS = []
+SIGNAL_TRACKING = {
+    "total_received": 0,
+    "total_parsed": 0,
+    "total_forwarded": 0,
+    "last_activity": None,
+    "recent_signals": [],
+    "errors": []
+}
+
+def log_telegram_activity(activity_type: str, message: str, data: dict = None):
+    """Log Telegram activity for monitoring"""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    log_entry = {
+        "timestamp": timestamp,
+        "type": activity_type,
+        "message": message,
+        "data": data or {}
+    }
+    
+    TELEGRAM_LOGS.append(log_entry)
+    # Keep only last 50 logs to prevent memory issues
+    if len(TELEGRAM_LOGS) > 50:
+        TELEGRAM_LOGS.pop(0)
+    
+    # Update tracking stats
+    SIGNAL_TRACKING["last_activity"] = timestamp
+    if activity_type == "message_received":
+        SIGNAL_TRACKING["total_received"] += 1
+    elif activity_type == "signal_parsed":
+        SIGNAL_TRACKING["total_parsed"] += 1
+    elif activity_type == "signal_forwarded":
+        SIGNAL_TRACKING["total_forwarded"] += 1
+    elif activity_type == "error":
+        SIGNAL_TRACKING["errors"].append({"timestamp": timestamp, "message": message})
+        # Keep only last 10 errors
+        if len(SIGNAL_TRACKING["errors"]) > 10:
+            SIGNAL_TRACKING["errors"].pop(0)
+    
+    print(f"[{timestamp}] {activity_type.upper()}: {message}")
+
 # Telegram Signal Parsing Functions
 def parse_telegram_signal(message_text: str) -> dict:
     """Parse trading signal from Telegram message text"""
@@ -343,15 +385,23 @@ def is_valid_signal(signal_data: dict) -> bool:
 async def forward_telegram_signal(signal_data: dict, original_message: str):
     """Forward parsed signal to Discord using the entry command logic"""
     try:
+        log_telegram_activity("forward_attempt", f"Attempting to forward signal for {signal_data.get('pair', 'unknown')}", signal_data)
+        
         if not TELEGRAM_DEFAULT_CHANNELS:
-            print("No default channels configured for Telegram forwarding")
+            error_msg = "No default channels configured for Telegram forwarding"
+            log_telegram_activity("error", error_msg)
+            print(error_msg)
             return
         
         # Get default guild (first guild the bot is in)
         guild = bot.guilds[0] if bot.guilds else None
         if not guild:
-            print("Bot not in any Discord servers")
+            error_msg = "Bot not in any Discord servers"
+            log_telegram_activity("error", error_msg)
+            print(error_msg)
             return
+        
+        log_telegram_activity("guild_found", f"Using guild: {guild.name} (ID: {guild.id})")
         
         # Calculate TP and SL levels
         levels = calculate_levels(signal_data['entry_price'], signal_data['pair'], signal_data['entry_type'])
@@ -421,12 +471,39 @@ Stop Loss: {levels['sl']}
                     print(f"Error sending to #{target_channel.name}: {str(e)}")
         
         if sent_messages:
-            print(f"✅ Telegram signal forwarded to {len(sent_channels)} channels: {', '.join(sent_channels)}")
+            success_msg = f"Signal forwarded to {len(sent_channels)} channels: {', '.join(sent_channels)}"
+            log_telegram_activity("signal_forwarded", success_msg, {
+                "channels": sent_channels,
+                "channel_ids": channel_ids,
+                "pair": signal_data.get('pair'),
+                "entry_type": signal_data.get('entry_type')
+            })
+            print(f"✅ Telegram {success_msg}")
+            
+            # Add to recent signals for tracking
+            SIGNAL_TRACKING["recent_signals"].append({
+                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "pair": signal_data.get('pair'),
+                "entry_type": signal_data.get('entry_type'),
+                "entry_price": signal_data.get('entry_price'),
+                "channels": sent_channels,
+                "status": "forwarded"
+            })
+            # Keep only last 10 recent signals
+            if len(SIGNAL_TRACKING["recent_signals"]) > 10:
+                SIGNAL_TRACKING["recent_signals"].pop(0)
         else:
-            print("❌ No messages sent - check channel configuration")
+            error_msg = "No messages sent - check channel configuration"
+            log_telegram_activity("error", error_msg, {
+                "configured_channels": TELEGRAM_DEFAULT_CHANNELS,
+                "parsed_channels": channel_list
+            })
+            print(f"❌ {error_msg}")
             
     except Exception as e:
-        print(f"❌ Error forwarding Telegram signal: {str(e)}")
+        error_msg = f"Error forwarding Telegram signal: {str(e)}"
+        log_telegram_activity("error", error_msg, {"exception": str(e), "signal_data": signal_data})
+        print(f"❌ {error_msg}")
 
 # Telegram message handler
 if telegram_client:
@@ -434,27 +511,45 @@ if telegram_client:
     async def handle_telegram_message(client, message: Message):
         """Handle incoming Telegram messages from the specified chat"""
         try:
+            # Log all incoming messages for monitoring
+            chat_info = f"Chat: {message.chat.title or 'Unknown'} (ID: {message.chat.id})"
+            log_telegram_activity("message_received", f"Message from {chat_info}", {
+                "chat_id": message.chat.id,
+                "chat_title": message.chat.title,
+                "message_preview": message.text[:100] if message.text else "No text"
+            })
+            
             # Only process messages from the configured source chat
             if TELEGRAM_SOURCE_CHAT_ID and str(message.chat.id) != TELEGRAM_SOURCE_CHAT_ID:
+                log_telegram_activity("message_filtered", f"Message from {chat_info} filtered out (not source chat)")
                 return
             
             # Skip if no text content
             if not message.text:
+                log_telegram_activity("message_skipped", "Message has no text content")
                 return
             
             print(f"📱 Received Telegram message: {message.text[:100]}...")
+            log_telegram_activity("message_processing", f"Processing message: {message.text[:100]}...")
             
             # Parse the signal
             signal_data = parse_telegram_signal(message.text)
             
             if is_valid_signal(signal_data):
                 print(f"🎯 Valid signal parsed: {signal_data}")
+                log_telegram_activity("signal_parsed", f"Valid signal parsed for {signal_data.get('pair')}", signal_data)
                 await forward_telegram_signal(signal_data, message.text)
             else:
                 print(f"⚠️ Invalid signal format, skipping...")
+                log_telegram_activity("signal_invalid", f"Invalid signal format in message", {
+                    "parsed_data": signal_data,
+                    "message_text": message.text[:200]
+                })
                 
         except Exception as e:
-            print(f"❌ Error processing Telegram message: {str(e)}")
+            error_msg = f"Error processing Telegram message: {str(e)}"
+            log_telegram_activity("error", error_msg, {"exception": str(e)})
+            print(f"❌ {error_msg}")
 
 def calculate_levels(entry_price: float, pair: str, entry_type: str):
     """Calculate TP and SL levels based on pair configuration"""
@@ -940,6 +1035,76 @@ async def telegram_command(interaction: discord.Interaction):
         
     except Exception as e:
         await interaction.response.send_message(f"❌ Error checking Telegram status: {str(e)}", ephemeral=True)
+
+@bot.tree.command(name="tracking", description="Monitor Telegram signal tracking and forwarding activity")
+async def tracking_command(interaction: discord.Interaction):
+    """Display detailed tracking information for Telegram signal forwarding"""
+    try:
+        # Build comprehensive tracking report
+        report = f"**📊 TELEGRAM SIGNAL TRACKING REPORT**\n\n"
+        
+        # Overall Statistics
+        report += f"**📈 OVERALL STATISTICS**\n"
+        report += f"• Messages Received: **{SIGNAL_TRACKING['total_received']}**\n"
+        report += f"• Signals Parsed: **{SIGNAL_TRACKING['total_parsed']}**\n"
+        report += f"• Signals Forwarded: **{SIGNAL_TRACKING['total_forwarded']}**\n"
+        report += f"• Last Activity: **{SIGNAL_TRACKING['last_activity'] or 'None'}**\n\n"
+        
+        # Success Rate
+        if SIGNAL_TRACKING['total_received'] > 0:
+            parse_rate = (SIGNAL_TRACKING['total_parsed'] / SIGNAL_TRACKING['total_received']) * 100
+            forward_rate = (SIGNAL_TRACKING['total_forwarded'] / SIGNAL_TRACKING['total_parsed']) * 100 if SIGNAL_TRACKING['total_parsed'] > 0 else 0
+            report += f"**📊 SUCCESS RATES**\n"
+            report += f"• Parse Rate: **{parse_rate:.1f}%**\n"
+            report += f"• Forward Rate: **{forward_rate:.1f}%**\n\n"
+        
+        # Recent Signals
+        if SIGNAL_TRACKING['recent_signals']:
+            report += f"**🎯 RECENT SIGNALS ({len(SIGNAL_TRACKING['recent_signals'])})**\n"
+            for signal in SIGNAL_TRACKING['recent_signals'][-5:]:  # Show last 5
+                report += f"• **{signal['timestamp']}** - {signal['pair']} ({signal['entry_type']}) → {len(signal['channels'])} channels\n"
+            report += "\n"
+        else:
+            report += f"**🎯 RECENT SIGNALS**\n• No signals processed yet\n\n"
+        
+        # Recent Errors
+        if SIGNAL_TRACKING['errors']:
+            report += f"**⚠️ RECENT ERRORS ({len(SIGNAL_TRACKING['errors'])})**\n"
+            for error in SIGNAL_TRACKING['errors'][-3:]:  # Show last 3
+                report += f"• **{error['timestamp']}** - {error['message'][:100]}\n"
+            report += "\n"
+        
+        # Configuration Status
+        report += f"**⚙️ CONFIGURATION STATUS**\n"
+        report += f"• Telegram Client: **{'✅ Active' if telegram_client else '❌ Not configured'}**\n"
+        report += f"• Source Chat ID: **{TELEGRAM_SOURCE_CHAT_ID or 'Not set (monitoring all)'}**\n"
+        report += f"• Default Channels: **{len(TELEGRAM_DEFAULT_CHANNELS.split(',')) if TELEGRAM_DEFAULT_CHANNELS else 0} configured**\n"
+        report += f"• Default Roles: **{TELEGRAM_DEFAULT_ROLES or 'None'}**\n\n"
+        
+        # Recent Activity Logs (last 10)
+        if TELEGRAM_LOGS:
+            report += f"**📝 RECENT ACTIVITY LOG ({len(TELEGRAM_LOGS)})**\n"
+            for log in TELEGRAM_LOGS[-10:]:
+                report += f"• **{log['timestamp']}** [{log['type'].upper()}] {log['message'][:80]}\n"
+        else:
+            report += f"**📝 RECENT ACTIVITY LOG**\n• No activity logged yet\n"
+        
+        # Split message if too long
+        if len(report) > 2000:
+            # Send first part
+            first_part = report[:1900] + "\n\n*[Continued in next message...]*"
+            await interaction.response.send_message(first_part, ephemeral=True)
+            
+            # Send second part
+            second_part = "*[...Continued from previous message]*\n\n" + report[1900:]
+            if len(second_part) > 2000:
+                second_part = second_part[:1950] + "\n\n*[Message truncated due to length limit]*"
+            await interaction.followup.send(second_part, ephemeral=True)
+        else:
+            await interaction.response.send_message(report, ephemeral=True)
+            
+    except Exception as e:
+        await interaction.response.send_message(f"❌ Error generating tracking report: {str(e)}", ephemeral=True)
 
 # Error handling
 @bot.event
