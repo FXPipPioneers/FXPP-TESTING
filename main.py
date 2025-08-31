@@ -4623,7 +4623,8 @@ async def active_trades(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed)
 
 @bot.tree.command(name="pricetest", description="[OWNER ONLY] Test live price retrieval for a trading pair")
-@app_commands.describe(pair="Trading pair to test (e.g., EURUSD, GBPJPY)")
+@app_commands.describe(pair="Trading pair to test")
+@app_commands.autocomplete(pair=pair_autocomplete)
 async def test_price_retrieval(interaction: discord.Interaction, pair: str):
     """Test price retrieval for a trading pair"""
     if not await owner_check(interaction):
