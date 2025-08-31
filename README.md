@@ -1,177 +1,275 @@
-# Discord Trading Bot
 
-A professional Discord bot for sending trading signals with automatic TP/SL calculations and comprehensive statistics tracking.
+# Discord Trading Bot with Timed Auto-Role System
 
-## Features
+A comprehensive Discord bot for trading signal distribution with automatic TP/SL calculations, statistics tracking, and an advanced timed auto-role system with PostgreSQL database integration.
 
-### 🎯 /entry Command
-- **Entry Types**: Buy limit, Sell limit, Buy execution, Sell execution
-- **Trading Pairs**: XAUUSD, GBPJPY, USDJPY, GBPUSD, EURUSD, AUDUSD, NZDUSD, US100, US500, and custom pairs
-- **Automatic Calculations**: 
-  - TP1: 20 pips from entry
-  - TP2: 50 pips from entry
-  - TP3: 100 pips from entry
-  - SL: 70 pips from entry (opposite direction)
+## 🚀 Key Features
+
+### 📊 Trading Signal Management
+- **Entry Signal Creation**: `/entry` command with automatic TP/SL calculations
+- **Statistics Tracking**: `/stats` command for performance analytics
 - **Multi-Channel Distribution**: Send signals to multiple channels simultaneously
-- **Role Tagging**: Tag specific roles at the bottom of signals
-- **Proper Formatting**: Correct decimal places and pip values per instrument
+- **Role Tagging**: Mention specific roles in trading signals
+- **Professional Formatting**: Proper decimal places and pip values per trading pair
 
-### 📊 /stats Command
-- **Comprehensive Statistics**: Track TP hits, SL hits, win rates
-- **Custom Date Ranges**: Flexible period selection
-- **Multi-Channel Distribution**: Send stats to multiple channels
-- **Professional Formatting**: Emoji-rich, clean presentation
-- **Performance Breakdown**: Detailed explanation of hit statistics
+### 🎯 Advanced Auto-Role System
+- **Timed Role Assignment**: 24-hour temporary roles for new members
+- **Weekend Handling**: Smart weekend detection with delayed activation
+- **Persistent Memory**: PostgreSQL database for tracking across bot restarts
+- **Anti-Abuse Protection**: Prevents users from rejoining to get roles again
+- **Automated DM System**: Follow-up messages at 3, 7, and 14 days
+- **Background Tasks**: Automatic role removal and notifications
 
-### 🔒 Enhanced Security
-- **Split Token System**: Token stored in two environment variables
-- **Secure Deployment**: Environment-based configuration
-- **Error Handling**: Comprehensive error management
+### 💾 Database Integration
+- **PostgreSQL Support**: Full database integration with asyncpg
+- **Persistent Storage**: Member tracking survives bot restarts
+- **Role History**: Complete audit trail of role assignments
+- **Anti-Duplicate System**: Prevents role farming by rejoining
 
-### 📱 Telegram Integration
-- **Automatic Signal Forwarding**: Monitors Telegram groups for trading signals
-- **Intelligent Signal Parsing**: Recognizes trading pairs, entry types, and prices
-- **Instant Relay**: Forwards signals to Discord without delays
-- **Broker Warnings**: Adds specific warnings for volatile pairs
-- **Configurable Monitoring**: Monitor specific chat IDs or all accessible chats
-- **Status Checking**: `/telegram` command to check integration status
+### 📱 Telegram Integration (Optional)
+- **Signal Forwarding**: Monitor Telegram groups for trading signals
+- **Intelligent Parsing**: Automatic signal recognition and formatting
+- **Multi-Platform**: Bridge between Telegram and Discord communities
 
-## Setup Instructions
+## 🛠️ Trading Pair Support
 
-### 1. Discord Bot Setup
-1. Go to [Discord Developer Portal](https://discord.com/developers/applications)
-2. Create a new application and bot
-3. Copy your bot token and client ID
-4. Enable necessary bot permissions:
-   - Send Messages
-   - Use Slash Commands
-   - Mention Everyone (for role tagging)
-   - Read Message History
+The bot supports 25+ trading pairs with automatic pip calculations:
 
-### 2. Environment Configuration
-1. Copy `.env.example` to `.env`
-2. Split your Discord bot token into two parts:
-   ```env
-   DISCORD_TOKEN_PART1=first_half_of_token
-   DISCORD_TOKEN_PART2=second_half_of_token
-   ```
-3. Split your Discord client ID into two parts:
-   ```env
-   DISCORD_CLIENT_ID_PART1=first_part_of_client_id
-   DISCORD_CLIENT_ID_PART2=second_part_of_client_id
-   ```
+**Major Forex Pairs:**
+- EURUSD, GBPUSD, AUDUSD, NZDUSD (4 decimals, 0.0001 pip)
+- USDJPY, GBPJPY, EURJPY, AUDJPY (3 decimals, 0.01 pip)
 
-### 3. Local Development
+**Commodities:**
+- XAUUSD (Gold), XAGUSD (Silver) (2 decimals, 0.1 pip)
+
+**Indices:**
+- US100, US500, GER40 (variable decimals, automatic calculation)
+
+**Cross Pairs:**
+- EURGBP, EURAUD, GBPAUD, AUDNZD, and many more
+
+## 🔧 Installation & Setup
+
+### Prerequisites
+- Python 3.11+
+- PostgreSQL database (Render PostgreSQL recommended)
+- Discord Bot Token
+- Discord Application with proper permissions
+
+### Environment Variables
+
+**Discord Configuration (Required):**
+```env
+DISCORD_TOKEN_PART1=first_half_of_your_discord_token
+DISCORD_TOKEN_PART2=second_half_of_your_discord_token
+DISCORD_CLIENT_ID_PART1=first_part_of_client_id
+DISCORD_CLIENT_ID_PART2=second_part_of_client_id
+```
+
+**Database Configuration (Required):**
+```env
+DATABASE_URL=postgresql://username:password@host:port/database
+```
+
+**Telegram Integration (Optional):**
+```env
+TELEGRAM_API_ID=your_api_id
+TELEGRAM_API_HASH=your_api_hash
+TELEGRAM_PHONE_NUMBER=your_phone_number
+TELEGRAM_SOURCE_CHAT_ID=chat_id_to_monitor
+TELEGRAM_DEFAULT_CHANNELS=channel_ids_comma_separated
+TELEGRAM_DEFAULT_ROLES=role_names_comma_separated
+```
+
+### Local Development
 ```bash
 # Install dependencies
-pip install discord.py python-dotenv
+pip install discord.py python-dotenv aiohttp asyncpg pyrogram tgcrypto
 
 # Run the bot
 python main.py
 ```
 
-## Render.com Deployment
+## 🚀 Deployment on Replit
 
-### 1. Prepare Your Repository
-1. Upload all project files to your GitHub repository
-2. Ensure all files are committed and pushed
+### 1. Project Setup
+1. Fork or import this repository into Replit
+2. The project includes all necessary configuration files
 
-### 2. Render.com Configuration
-1. Connect your GitHub repository to Render.com
-2. **Create a new "Web Service"** (FREE tier available)
-3. Use these settings:
+### 2. Environment Configuration
+Set these secrets in your Replit environment:
+- `DISCORD_TOKEN_PART1` - First half of Discord bot token
+- `DISCORD_TOKEN_PART2` - Second half of Discord bot token
+- `DISCORD_CLIENT_ID_PART1` - First part of Discord client ID
+- `DISCORD_CLIENT_ID_PART2` - Second part of Discord client ID
+- `DATABASE_URL` - PostgreSQL connection string
 
-**Build Command:**
+### 3. Database Setup
+You'll need a PostgreSQL database. Recommended options:
+- **Render PostgreSQL**: Free tier available, automatic SSL
+- **Supabase**: Generous free tier with dashboard
+- **Neon**: Serverless PostgreSQL with free tier
+
+### 4. Run the Bot
+Click the "Run" button in Replit. The bot will:
+- Install all dependencies automatically
+- Connect to your database
+- Start the web server on port 5000
+- Initialize Discord bot connection
+
+## 📋 Command Reference
+
+### `/entry` - Create Trading Signal
+Create and distribute trading signals with automatic calculations.
+
+**Parameters:**
+- `entry_type`: Buy limit, Sell limit, Buy execution, Sell execution
+- `pair`: Trading pair (EURUSD, XAUUSD, etc.)
+- `price`: Entry price
+- `channels`: Comma-separated channel mentions
+- `roles`: Roles to mention (required)
+
+**Example:**
 ```
-pip install discord.py python-dotenv aiohttp pyrogram tgcrypto
-```
-
-**Start Command:**
-```
-python main.py
-```
-
-### 3. Environment Variables on Render
-Set these environment variables in your Render dashboard:
-
-**Discord Configuration (Required):**
-- `DISCORD_TOKEN_PART1` = (first half of your Discord bot token)
-- `DISCORD_TOKEN_PART2` = (second half of your Discord bot token)  
-- `DISCORD_CLIENT_ID_PART1` = (first half of your Discord app client ID)
-- `DISCORD_CLIENT_ID_PART2` = (second half of your Discord app client ID)
-
-**Telegram Integration (Optional):**
-- `TELEGRAM_API_ID` = Your Telegram API ID from my.telegram.org
-- `TELEGRAM_API_HASH` = Your Telegram API Hash from my.telegram.org
-- `TELEGRAM_PHONE_NUMBER` = Your phone number for Telegram
-- `TELEGRAM_SOURCE_CHAT_ID` = Chat ID to monitor (optional, monitors all if not set)
-- `TELEGRAM_DEFAULT_CHANNELS` = Default Discord channels (comma-separated)
-- `TELEGRAM_DEFAULT_ROLES` = Default roles to mention (comma-separated)
-
-**Example Token Split:**
-If your token is: `MTIzNDU2Nzg5MDEyMzQ1Njc4.ABCDEF.xyz123abc456def789`
-- DISCORD_TOKEN_PART1: `MTIzNDU2Nzg5MDEyMzQ1Njc4.ABC`
-- DISCORD_TOKEN_PART2: `DEF.xyz123abc456def789`
-
-If your client ID is: `1234567890123456789`
-- DISCORD_CLIENT_ID_PART1: `123456789`
-- DISCORD_CLIENT_ID_PART2: `0123456789`
-
-### 4. Deploy
-1. Click "Deploy" on Render.com
-2. Monitor the deployment logs
-3. Once deployed, your bot will run 24/7
-
-## Trading Pair Configurations
-
-The bot automatically handles different decimal places and pip values:
-
-- **XAUUSD & US500**: 2 decimals, $0.1 = 1 pip
-- **GBPJPY & USDJPY**: 3 decimals, $0.01 = 1 pip
-- **GBPUSD & EURUSD**: 4 decimals, $0.0001 = 1 pip
-- **AUDUSD & NZDUSD**: 5 decimals, $0.00001 = 1 pip
-- **US100**: 1 decimal, $1 = 1 pip
-
-## Usage Examples
-
-### /entry Command
-```
-/entry 
-- type: Buy execution
-- pair: XAUUSD
-- price: 2028
-- channels: #signals, #trading-room
-- roles: @traders, @vip
+/entry entry_type:Buy execution pair:XAUUSD price:2650.50 channels:#signals,#trading-room roles:@traders,@vip
 ```
 
-### /stats Command
+### `/stats` - Trading Statistics
+Generate and send performance statistics.
+
+**Parameters:**
+- `date_range`: Period for statistics
+- `total_signals`: Total signals sent
+- `tp1_hits`, `tp2_hits`, `tp3_hits`: TP level hits
+- `sl_hits`: Stop loss hits
+- `channels`: Where to send stats
+- `currently_open`: Open trades (optional)
+
+### `/timedautorole` - Auto-Role Management
+Configure the automatic role assignment system.
+
+**Actions:**
+- `enable` - Enable auto-role with specified role
+- `disable` - Disable the system
+- `status` - Check current configuration
+- `list` - Show active temporary role holders
+
+**Example:**
 ```
-/stats
-- date_range: 15/06/2025 - 19/06/2025
-- total_signals: 9
-- tp1_hits: 7
-- tp2_hits: 6
-- tp3_hits: 5
-- sl_hits: 2
-- winrate: 100% (8/8)
-- channels: #statistics, #performance
+/timedautorole action:enable role:@Premium Access
 ```
 
-## File Structure
+## 🏗️ System Architecture
+
+### Core Components
+- **Discord.py**: Async Discord API wrapper
+- **PostgreSQL**: Persistent data storage
+- **Background Tasks**: Role management and cleanup
+- **Web Server**: Health checks and uptime monitoring
+- **Timezone Handling**: Amsterdam timezone for weekend detection
+
+### Database Schema
+The bot automatically creates necessary tables:
+- `auto_role_members`: Active temporary role tracking
+- `role_history`: Complete audit trail of role assignments
+- `member_blacklist`: Anti-abuse tracking
+
+### Security Features
+- **Split Token System**: Enhanced security for Discord credentials
+- **Environment-based Config**: No hardcoded sensitive data
+- **Permission Validation**: Proper Discord permission checks
+- **Error Handling**: Comprehensive exception management
+
+## 📊 Auto-Role System Details
+
+### Weekend Handling
+- **Detection**: Automatically detects Amsterdam timezone weekends
+- **Smart Activation**: 24-hour countdown starts Monday 00:01
+- **User Notification**: Explains weekend delay via DM
+
+### Follow-up DM System
+Automated messages sent after role expiration:
+- **Day 3**: Initial follow-up invitation
+- **Day 7**: Weekly reminder with value proposition
+- **Day 14**: Final invitation with benefits explanation
+
+*Note: DMs are only sent if user doesn't have @Gold Pioneer role*
+
+### Anti-Abuse Protection
+- **One-Time Only**: Users can only receive auto-role once per Discord account
+- **Persistent Tracking**: Database survives bot restarts
+- **Admin Override**: Manual `/timedautorole adduser` always works
+
+## 🔍 Monitoring & Health Checks
+
+The bot includes built-in monitoring:
+- **Health Endpoint**: `/health` for uptime monitoring
+- **Status Endpoint**: `/status` for detailed bot information
+- **Console Logging**: Comprehensive activity logs
+- **Error Reporting**: Detailed error tracking
+
+## 📈 Performance Features
+
+- **Async Architecture**: Non-blocking operations
+- **Connection Pooling**: Efficient database connections
+- **Background Tasks**: Separate threads for role management
+- **Memory Optimization**: Efficient data structures
+- **Rate Limit Handling**: Discord API rate limit compliance
+
+## 🛡️ Required Discord Permissions
+
+For full functionality, the bot needs:
+- **Send Messages**: Basic messaging capability
+- **Use Slash Commands**: Command functionality
+- **Manage Roles**: Auto-role assignment/removal
+- **Read Message History**: Channel access
+- **Mention Everyone**: Role tagging in signals
+- **Send Private Messages**: DM notifications
+
+## 📁 Project Structure
 ```
 discord-trading-bot/
-├── main.py              # Main bot code
-├── .env.example         # Environment template
-├── render.yaml          # Render.com configuration
-├── Procfile            # Process file for deployment
-├── runtime.txt         # Python version specification
-├── dependencies.txt    # Python dependencies
-└── README.md           # Documentation
+├── main.py                 # Main bot application
+├── requirements.txt        # Python dependencies
+├── dependencies.txt        # Alternative dependency list
+├── .env.example           # Environment template
+├── README.md              # This file
+├── pyproject.toml         # Python project configuration
+├── .replit                # Replit configuration
+├── render.yaml            # Render deployment config
+└── discord-bot-updated/   # Updated version directory
+    ├── main.py
+    ├── requirements.txt
+    ├── README.md
+    └── various config files
 ```
 
-## Security Features
-- Split token storage for enhanced security
-- Environment-based configuration
-- Comprehensive error handling
-- Permission validation
-   
+## 🐛 Troubleshooting
+
+### Common Issues
+1. **Token Errors**: Ensure both token parts are set correctly
+2. **Database Connection**: Verify DATABASE_URL format
+3. **Permission Errors**: Check Discord bot permissions
+4. **Role Issues**: Ensure bot role is above managed roles
+
+### Debug Steps
+1. Check Replit console for error messages
+2. Verify all environment variables are set
+3. Test database connection
+4. Confirm Discord bot permissions in server settings
+
+## 📄 License
+
+This project is for educational and personal use. Please respect Discord's Terms of Service and API guidelines.
+
+## 🤝 Support
+
+For issues or questions:
+1. Check the console logs in Replit
+2. Verify your environment configuration
+3. Ensure database connectivity
+4. Test with simple commands first
+
+---
+
+**Note**: This bot includes sophisticated features like persistent database storage, timezone-aware weekend handling, and comprehensive anti-abuse systems. Make sure your PostgreSQL database is properly configured before deployment.

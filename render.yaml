@@ -3,9 +3,12 @@ services:
     name: discord-trading-bot
     env: python
     runtime: python-3.11.0
-    buildCommand: pip install --upgrade pip && pip install -r dependencies.txt
-    startCommand: python main.py
+    buildCommand: "pip install --upgrade pip && pip install discord.py==2.5.2 python-dotenv==1.1.0 aiohttp==3.12.13 asyncpg==0.30.0 requests pyrogram==2.0.106 tgcrypto==1.2.5"
+    startCommand: "python main.py"
     healthCheckPath: /health
+    plan: free
+    region: oregon
+    autoDeploy: false
     envVars:
       - key: DISCORD_TOKEN_PART1
         sync: false
